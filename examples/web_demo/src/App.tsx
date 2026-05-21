@@ -61,7 +61,7 @@ export default function App() {
     setPayload(null);
     setHover(null);
     setFrame(0);
-    loadPayload(`/${scenario.file}`).then(setPayload).catch((e) => setErr(String(e)));
+    loadPayload(scenario.file).then(setPayload).catch((e) => setErr(String(e)));
   }, [scenario]);
 
   // Playback RAF loop.

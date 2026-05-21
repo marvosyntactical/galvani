@@ -74,13 +74,23 @@ export interface Manifest {
   datasets: ManifestDataset[];
 }
 
-export async function loadManifest(url = "/manifest.json"): Promise<Manifest> {
+/** Asset path resolver. Honours Vite's BASE_URL so the same code works
+ *  under both `npm run dev` (base "/") and the GH-Pages build (base
+ *  "/galvani/"). Always pass plain filenames like "manifest.json". */
+function assetUrl(relative: string): string {
+  const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+  return `${base}/${relative.replace(/^\//, "")}`;
+}
+
+export async function loadManifest(): Promise<Manifest> {
+  const url = assetUrl("manifest.json");
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Failed to load manifest: ${r.status}`);
   return (await r.json()) as Manifest;
 }
 
-export async function loadPayload(url: string): Promise<Payload> {
+export async function loadPayload(file: string): Promise<Payload> {
+  const url = assetUrl(file);
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to load ${url}: ${response.status}`);
