@@ -123,6 +123,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
                 },
             },
             angles=angles,
+            stim_fn=stim_rot,
             stride=40,
             min_radius=8.0,
             n_frames=120,
@@ -163,6 +164,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
                 },
             },
             angles=angles,
+            stim_fn=stim_static,
             stride=40,
             min_radius=8.0,
             n_frames=60,
@@ -210,6 +212,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
                 },
             },
             angles=angles,
+            stim_fn=stim_persist,
             stride=40,
             min_radius=8.0,
             n_frames=120,
@@ -239,9 +242,8 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
         pulse = pulse_stimulus_for_ids(target_ids, neuron_ids, t0=0.5, duration=0.5, amplitude=0.5)
         return sum_stimuli(init, pulse)
 
-    result_vel_l = simulate(
-        spec, duration=1.5, stimulus=velocity_stim(pen_l), activation=tanh, dt=2e-4
-    )
+    stim_vel_l = velocity_stim(pen_l)
+    result_vel_l = simulate(spec, duration=1.5, stimulus=stim_vel_l, activation=tanh, dt=2e-4)
     yield (
         ScenarioSpec(
             id="velocity_left",
@@ -276,15 +278,15 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
                 },
             },
             angles=angles,
+            stim_fn=stim_vel_l,
             stride=40,
             min_radius=8.0,
             n_frames=120,
         ),
     )
 
-    result_vel_r = simulate(
-        spec, duration=1.5, stimulus=velocity_stim(pen_r), activation=tanh, dt=2e-4
-    )
+    stim_vel_r = velocity_stim(pen_r)
+    result_vel_r = simulate(spec, duration=1.5, stimulus=stim_vel_r, activation=tanh, dt=2e-4)
     yield (
         ScenarioSpec(
             id="velocity_right",
@@ -318,6 +320,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
                 },
             },
             angles=angles,
+            stim_fn=stim_vel_r,
             stride=40,
             min_radius=8.0,
             n_frames=120,
@@ -451,6 +454,7 @@ def mushroom_body_scenarios(conn: HemibrainConnectome):
                 "kc_drive_fraction": 0.30,
                 "stimulus": {"type": "constant_subset", "amplitude": 0.5},
             },
+            stim_fn=stim,
             stride=30,
             min_radius=6.0,
             n_frames=60,
@@ -488,6 +492,7 @@ def mushroom_body_scenarios(conn: HemibrainConnectome):
                 "kc_drive_fraction": 0.30,
                 "stimulus": {"type": "constant_subset", "amplitude": 0.5},
             },
+            stim_fn=stim,
             stride=30,
             min_radius=6.0,
             n_frames=60,

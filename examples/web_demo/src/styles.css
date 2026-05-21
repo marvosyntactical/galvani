@@ -318,3 +318,16 @@ body {
   font-size: 14px;
   color: var(--muted);
 }
+
+/* Inline loading overlay that sits on top of the canvas without
+   replacing the rest of the UI. */
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(11, 15, 23, 0.85);
+  color: var(--muted);
+  font-size: 14px;
+  z-index: 5;
+}

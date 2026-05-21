@@ -52,6 +52,9 @@ export interface Payload {
   times: number[];
   /** (n_frames, n_neurons) */
   rates: number[][];
+  /** Optional external-input drive, (n_frames, n_neurons). Present when
+   *  the bake script knew the stimulus function for the scenario. */
+  stim_signal?: number[][];
 }
 
 export interface ManifestScenario {

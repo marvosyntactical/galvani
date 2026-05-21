@@ -3,7 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { Line } from "@react-three/drei";
 import * as THREE from "three";
 import type { PayloadNeuron, Payload } from "./payload";
-import { activityColor } from "./colormap";
+import { activityColor, blendInput } from "./colormap";
 import { baseColorFor } from "./cellTypes";
 
 export type RenderMode = "lines" | "tubes";
@@ -192,6 +192,13 @@ export function RingScene({
     return mx > 0 ? mx : 1;
   }, [payload]);
 
+  const maxStim = useMemo(() => {
+    if (!payload.stim_signal) return 1;
+    let mx = 0;
+    for (const row of payload.stim_signal) for (const v of row) if (v > mx) mx = v;
+    return mx > 0 ? mx : 1;
+  }, [payload]);
+
   // Keep Line2 resolution in sync with the canvas.
   useEffect(() => {
     if (renderMode !== "lines") return;
@@ -207,11 +214,16 @@ export function RingScene({
   useFrame(() => {
     const t = Math.max(0, Math.min(payload.metadata.n_frames - 1, Math.round(frame)));
     const row = payload.rates[t];
+    const stimRow = payload.stim_signal?.[t];
     for (let i = 0; i < refs.current.length; i++) {
       const obj = refs.current[i];
       if (!obj) continue;
       const v = row[i] / maxRate;
       activityColor(v, baseColors[i], tmp);
+      if (stimRow) {
+        const inputLevel = stimRow[i] / maxStim;
+        if (inputLevel > 0.05) blendInput(tmp, inputLevel, tmp);
+      }
       const mat = (obj as unknown as { material?: { color?: THREE.Color } }).material;
       if (mat && mat.color) {
         mat.color.copy(tmp);

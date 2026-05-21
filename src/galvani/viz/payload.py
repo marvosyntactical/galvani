@@ -220,6 +220,7 @@ def build_payload(
     description: str,
     hyperparams: dict[str, Any],
     angles: NDArray[np.float64] | None = None,
+    stim_fn: Any = None,
     stride: int = 40,
     min_radius: float = 8.0,
     n_frames: int = 120,
@@ -231,6 +232,10 @@ def build_payload(
     `description` is human-readable Markdown-lite shown in the UI infobox.
     `hyperparams` is a free-form dict echoed into metadata for the
     "Hyperparameters & assumptions" infobox.
+    `stim_fn`: optional callable `(t: float) -> NDArray` returning the
+    external input vector at simulated time t. If provided, the resulting
+    per-frame stim is baked into the payload as `stim_signal` so the
+    frontend can render the driving input alongside the activity.
     """
     n_neurons = len(subgraph.neurons)
     if angles is not None and len(angles) != n_neurons:
@@ -246,6 +251,11 @@ def build_payload(
     times, rates = _downsample_rates(result.times, result.rates, n_frames)
     rates_rounded = np.round(rates, 4).tolist()
     times_rounded = np.round(times, 6).tolist()
+
+    stim_signal: list[list[float]] | None = None
+    if stim_fn is not None:
+        sampled = np.stack([np.asarray(stim_fn(float(t))) for t in times], axis=0)
+        stim_signal = np.round(sampled, 3).tolist()
 
     neurons_payload = []
     for i, neuron in enumerate(subgraph.neurons):
@@ -266,7 +276,7 @@ def build_payload(
             }
         )
 
-    return {
+    payload: dict[str, Any] = {
         "metadata": {
             "schema_version": SCHEMA_VERSION,
             "dataset_id": dataset_id,
@@ -285,6 +295,9 @@ def build_payload(
         "times": times_rounded,
         "rates": rates_rounded,
     }
+    if stim_signal is not None:
+        payload["stim_signal"] = stim_signal
+    return payload
 
 
 # Backwards-compat alias for the old name kept for any imports we missed.

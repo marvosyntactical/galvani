@@ -16,7 +16,10 @@ Re-read this list at the start of every work session. If a new idea arrives, wri
 
 ## v2+
 
-- **Biophysical (LIF / HH) models.** Beyond rate dynamics.
+- **Biophysical (LIF / HH) models.** Beyond rate dynamics. The rate model in v1 (`tau * dr/dt = -r + phi(W*r + I + b)`) ignores spike timing, refractory periods, and ion-channel kinetics. To do biophysics we'd add a `model.lif` backend (leaky integrate-and-fire: each neuron has a membrane voltage, fires when V > threshold, has a reset and refractory period) and optionally a `model.hh` backend (Hodgkin-Huxley with gating variables for Na+/K+ channels). The `Subgraph` and `Parameterizer` are unchanged; only the simulator differs. Brian2 (already in the `[brian]` extra) is the natural backend for both. Cost: ~1 week for LIF + per-cell-type tuning; ~2 weeks for HH + per-channel parameter tables. v1 rate model is the right baseline; biophysics adds detail without changing the qualitative story for the HD ring or MB.
+- **Live hyperparameter editing in the web demo.** Currently scenarios are pre-baked. Two routes: (a) ship a few pre-baked gain/stim variants and let the user pick from a slider that snaps to those values (~half day, no new infrastructure); (b) port the rate simulator to WASM / pyodide / pure-JS and let the user adjust hyperparams and re-simulate in-browser (~1 week, ~5 MB extra JS bundle, ~1-3 s recompute time for HD ring). (b) is more impressive; (a) is more practical for v1.5.
+- **In-browser data upload.** A "Load custom payload" file picker that lets the user drag-drop a JSON in our schema. Useful for: testing local bake variants without redeploying, sharing arbitrary scenarios via download links, plus the obvious "show me MY connectome" use case. Lower-hanging fruit than (b) above; ~half day.
+- **DTI-tractography backend.** Build a `connectome.dti` loader that consumes a tractography connectivity matrix (e.g. HCP / Glasser-360-parcellation streamline counts) and a `parameterize.region_defaults` with Wilson-Cowan or Jansen-Rit defaults at region level. The `Simulator` is unchanged. This is the killer demo for "infrastructure across resolution scales" — same pipeline drives both an EM connectome (130 neurons) and a DTI connectome (360 regions). ~1 week for synthetic / published example dataset; ~2 weeks for a clean HCP-data loader.
 - **Jaxley backend** for differentiable simulation. Enables param fitting.
 - **Parameter fitting to neural recordings.** Tempting and harder than it looks.
 - **General-purpose subgraph editor UI.**
@@ -27,7 +30,7 @@ Re-read this list at the start of every work session. If a new idea arrives, wri
 - Authentication / multi-user / cloud deployment.
 - Brain simulator competing with NEURON/NEST/Brian2 directly.
 - A Neuroglancer replacement.
-- Mammalian connectomes (different scale, different tooling).
+- Mammalian connectomes (different scale, different tooling). *(Note: DTI-tractography support above sits in a gray zone — it does mammalian connectivity but at region scale, not cell scale.)*
 
 ---
 

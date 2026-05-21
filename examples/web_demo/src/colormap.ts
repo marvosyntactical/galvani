@@ -63,3 +63,25 @@ export function activityColor(
   }
   return target;
 }
+
+const _input = new THREE.Color("#ff5cb0"); // hot pink: "external input"
+const _scratch = new THREE.Color();
+
+/**
+ * Blend the activity color with an "external input" tint so neurons that
+ * are receiving non-zero stimulus get a perceptually-distinct halo on top
+ * of their activity color.
+ *
+ *   inputLevel in [0, 1] -> mix factor in [0, ~0.6].
+ */
+export function blendInput(
+  activityCol: THREE.Color,
+  inputLevel: number,
+  out?: THREE.Color,
+): THREE.Color {
+  const target = out ?? _scratch;
+  target.copy(activityCol);
+  const mix = Math.max(0, Math.min(1, inputLevel)) * 0.6;
+  if (mix > 0) target.lerp(_input, mix);
+  return target;
+}
