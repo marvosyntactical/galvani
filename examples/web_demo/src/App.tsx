@@ -12,6 +12,8 @@ import { loadManifest, loadPayload } from "./payload";
 import { CELL_TYPE_INFO } from "./cellTypes";
 import { Infobox } from "./Infobox";
 import { RingScene, type HoverInfo, type RenderMode } from "./RingScene";
+import { UploadButton } from "./UploadButton";
+import { canResim, resimulateWithGain } from "./resim";
 
 export default function App() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
@@ -26,6 +28,12 @@ export default function App() {
   const [speed, setSpeed] = useState(1.0);
   const [renderMode, setRenderMode] = useState<RenderMode>("lines");
   const [hover, setHover] = useState<HoverInfo | null>(null);
+  // Live-resim state: when non-null, overrides the baked rates.
+  const [gainOverride, setGainOverride] = useState<number | null>(null);
+  const [resimBusy, setResimBusy] = useState(false);
+  const [customPayload, setCustomPayload] = useState<{ p: Payload; name: string } | null>(
+    null,
+  );
 
   const rafRef = useRef<number | null>(null);
   const lastTickRef = useRef<number>(performance.now());
@@ -58,9 +66,18 @@ export default function App() {
   // payload on screen until the new one arrives -- so changing dropdowns
   // never blanks the UI.
   useEffect(() => {
+    // If the user uploaded a custom JSON, show that instead.
+    if (customPayload) {
+      setPayload(customPayload.p);
+      setPayloadLoading(false);
+      setFrame(0);
+      setGainOverride(null);
+      return;
+    }
     if (!scenario) return;
     setPayloadLoading(true);
     setHover(null);
+    setGainOverride(null);
     let cancelled = false;
     loadPayload(scenario.file)
       .then((p) => {
@@ -78,7 +95,23 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [scenario]);
+  }, [scenario, customPayload]);
+
+  // Live re-simulation when the user drags the gain slider.
+  useEffect(() => {
+    if (gainOverride === null || !payload || !canResim(payload)) return;
+    setResimBusy(true);
+    // Defer to next animation frame so the slider stays responsive.
+    const handle = requestAnimationFrame(() => {
+      try {
+        const result = resimulateWithGain(payload, gainOverride);
+        setPayload({ ...payload, rates: result.rates, times: result.times });
+      } finally {
+        setResimBusy(false);
+      }
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [gainOverride]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!payload) return;
@@ -107,10 +140,20 @@ export default function App() {
   if (err) return <div className="loading">Error: {err}</div>;
   if (!manifest || !dataset) return <div className="loading">Loading manifest…</div>;
 
+  // Frame can briefly fall out of range (e.g. NaN propagated through the
+  // RAF loop, or a scenario change leaving stale state) -- clamp defensively
+  // so the render never tries to .toFixed undefined.
+  const safeFrame = Number.isFinite(frame) ? frame : 0;
   const currentFrame = payload
-    ? Math.round(frame) % payload.metadata.n_frames
+    ? Math.max(
+        0,
+        Math.min(
+          payload.metadata.n_frames - 1,
+          Math.round(safeFrame),
+        ),
+      )
     : 0;
-  const currentT = payload ? payload.times[currentFrame] : 0;
+  const currentT = payload ? (payload.times[currentFrame] ?? 0) : 0;
 
   const typesInPayload = payload
     ? Array.from(new Set(payload.neurons.map((n) => n.cell_type)))
@@ -233,6 +276,52 @@ export default function App() {
               Tubes
             </button>
           </div>
+        </div>
+
+        {payload && canResim(payload) && (
+          <div className="selector">
+            <label>
+              Live gain ={" "}
+              {(gainOverride ?? payload.metadata.hyperparams.global_gain).toFixed(4)}
+              {resimBusy && <span className="badge" style={{ marginLeft: 8 }}>resimming…</span>}
+            </label>
+            <input
+              type="range"
+              min={0.001}
+              max={0.05}
+              step={0.0005}
+              value={gainOverride ?? payload.metadata.hyperparams.global_gain}
+              onChange={(e) => setGainOverride(parseFloat(e.target.value))}
+            />
+            {gainOverride !== null && (
+              <button
+                className="reset-btn"
+                onClick={() => {
+                  setGainOverride(null);
+                  // Reload original baked payload.
+                  if (scenario && !customPayload) {
+                    loadPayload(scenario.file).then(setPayload);
+                  }
+                }}
+              >
+                Reset to baked gain
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="selector">
+          <label>Custom data</label>
+          <UploadButton
+            onLoad={(p, name) => setCustomPayload({ p, name })}
+            onError={(msg) => setErr(msg)}
+          />
+          {customPayload && (
+            <div className="custom-badge">
+              <span>{customPayload.name}</span>
+              <button onClick={() => setCustomPayload(null)}>×</button>
+            </div>
+          )}
         </div>
 
         <Infobox title="What am I looking at?">

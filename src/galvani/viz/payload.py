@@ -221,6 +221,7 @@ def build_payload(
     hyperparams: dict[str, Any],
     angles: NDArray[np.float64] | None = None,
     stim_fn: Any = None,
+    spec: Any = None,
     stride: int = 40,
     min_radius: float = 8.0,
     n_frames: int = 120,
@@ -297,6 +298,16 @@ def build_payload(
     }
     if stim_signal is not None:
         payload["stim_signal"] = stim_signal
+    # Optional: include the model's weight matrix + tau + bias so the
+    # frontend can re-run the rate sim live with a tweaked global gain.
+    # We round to 3 decimals to keep size manageable -- ~70 KB for 130x130.
+    if spec is not None:
+        payload["model"] = {
+            "weights": np.round(spec.weights, 3).tolist(),
+            "tau": np.round(spec.tau, 4).tolist(),
+            "bias": np.round(spec.bias, 4).tolist(),
+            "global_gain": float(spec.global_gain),
+        }
     return payload
 
 

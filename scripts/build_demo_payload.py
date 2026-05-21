@@ -27,7 +27,9 @@ from galvani.circuits.hd_ring import load_hd_ring
 from galvani.circuits.mushroom_body import MB_NT, load_mushroom_body
 from galvani.connectome.base import Subgraph
 from galvani.connectome.cache import ParquetCache
+from galvani.connectome.dti import DTIConnectome
 from galvani.connectome.hemibrain import HD_RING_NT, HemibrainConnectome
+from galvani.model.lif import simulate_lif
 from galvani.model.rate import relu, tanh
 from galvani.stimuli import (
     pulse_stimulus_for_ids,
@@ -105,6 +107,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
             subgraph,
             result_rot,
             skeleton_provider=_PROVIDER,
+            spec=spec,
             dataset_id="hd_ring",
             scenario_id="tracking",
             scenario_label="Bump tracking",
@@ -146,6 +149,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
             subgraph,
             result_static,
             skeleton_provider=_PROVIDER,
+            spec=spec,
             dataset_id="hd_ring",
             scenario_id="existence",
             scenario_label="Bump existence",
@@ -192,6 +196,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
             subgraph,
             result_persist,
             skeleton_provider=_PROVIDER,
+            spec=spec,
             dataset_id="hd_ring",
             scenario_id="persistence",
             scenario_label="Bump persistence",
@@ -258,6 +263,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
             subgraph,
             result_vel_l,
             skeleton_provider=_PROVIDER,
+            spec=spec,
             dataset_id="hd_ring",
             scenario_id="velocity_left",
             scenario_label="Velocity integration (L-PEN pulse)",
@@ -300,6 +306,7 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
             subgraph,
             result_vel_r,
             skeleton_provider=_PROVIDER,
+            spec=spec,
             dataset_id="hd_ring",
             scenario_id="velocity_right",
             scenario_label="Velocity integration (R-PEN pulse)",
@@ -500,6 +507,148 @@ def mushroom_body_scenarios(conn: HemibrainConnectome):
     )
 
 
+# ---------------- LIF biophysical scenario -----------------------------------
+
+
+def lif_hd_ring_scenarios(subgraph, angles, n_neurons, neuron_ids):
+    """One LIF (spiking) HD-ring scenario."""
+    gain = 0.04  # LIF needs more drive than rate model
+    opts = ParameterizerOptions(symmetrize=True, global_gain=gain)
+    spec = default_parameterizer(subgraph, opts)
+    omega = 1.0
+    n_total = n_neurons
+    stim = rotating_stimulus(angles, omega=omega, width=0.5, amplitude=1.5)
+    result = simulate_lif(spec, duration=2.0, stimulus=stim, dt=2e-4, v_threshold=0.5)
+    yield (
+        ScenarioSpec(
+            id="lif_tracking",
+            label="LIF spikes: rotating stim",
+            description=(
+                "Same hemibrain HD ring, but simulated with a leaky integrate-"
+                "and-fire model: neurons have voltages that spike when they "
+                "cross threshold, are reset, and refract for 2 ms. Activity "
+                "shown is instantaneous spike rate."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result,
+            skeleton_provider=_PROVIDER,
+            spec=spec,
+            dataset_id="hd_ring",
+            scenario_id="lif_tracking",
+            scenario_label="LIF spiking · rotating stim",
+            description=(
+                "Biophysical LIF simulation of the HD ring under a rotating "
+                "Gaussian stimulus. Each neuron integrates synaptic drive on "
+                "a voltage trace; threshold crossings produce spikes (reset + "
+                "2 ms refractory). The bump now consists of discrete spike "
+                "events, not a continuous rate."
+            ),
+            hyperparams={
+                "global_gain": gain,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "LIF",
+                "dt_sim": 2e-4,
+                "v_threshold": 0.5,
+                "v_reset": 0.0,
+                "t_refractory_s": 0.002,
+                "syn_tau_s": 0.005,
+                "stimulus": {
+                    "type": "rotating",
+                    "omega_rad_per_s": omega,
+                    "width_rad": 0.5,
+                    "amplitude": 1.5,
+                },
+            },
+            angles=angles,
+            stim_fn=stim,
+            stride=40,
+            min_radius=8.0,
+            n_frames=120,
+        ),
+    )
+    _ = n_total, neuron_ids  # silence unused (kept for signature parity)
+
+
+# ---------------- DTI (synthetic brain) scenarios ----------------------------
+
+
+def dti_scenarios():
+    """Region-level rate dynamics on a synthetic DTI matrix."""
+    conn = DTIConnectome.synthetic(n_regions=30, seed=0)
+    neurons = conn.query()
+    subgraph = conn.subgraph(neurons)
+    # Region-level defaults: no NT signs (DTI is unsigned), tau = 100 ms,
+    # symmetrize since DTI matrices are already symmetric.
+    opts = ParameterizerOptions(symmetrize=True, global_gain=0.001, weight_heuristic="log1p")
+    spec = default_parameterizer(subgraph, opts)
+    # Override tau to a region-appropriate 100 ms (slower than single neurons).
+    import dataclasses as _dc
+
+    spec = _dc.replace(spec, tau=np.full_like(spec.tau, 0.1))
+
+    n = len(neurons)
+    # Stimulus: drive one hemisphere first, then switch.
+    rng = np.random.default_rng(1)
+    side_l = np.array([n_.hemisphere == "L" for n_ in neurons])
+    side_r = ~side_l
+    pattern_l = np.where(side_l, 0.5 + 0.1 * rng.normal(size=n), 0.0)
+    pattern_r = np.where(side_r, 0.5 + 0.1 * rng.normal(size=n), 0.0)
+
+    def stim(t):
+        return pattern_l if t < 1.0 else pattern_r
+
+    result = simulate(spec, duration=2.0, stimulus=stim, activation=tanh, dt=2e-3)
+    yield (
+        ScenarioSpec(
+            id="hemispheric_drive",
+            label="Hemispheric drive switch",
+            description=(
+                "30-region synthetic DTI brain. Drive the left hemisphere "
+                "for 1 second, then switch to the right. Activity propagates "
+                "across the inter-hemispheric connections."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result,
+            skeleton_provider=conn,
+            spec=spec,
+            dataset_id="dti_synthetic",
+            scenario_id="hemispheric_drive",
+            scenario_label="Hemispheric drive switch",
+            description=(
+                "Synthetic DTI connectome (30 regions, 15 per hemisphere) "
+                "with biologically-plausible motifs: log-normal weight "
+                "distribution, intra-hemisphere bias, homotopic-pair "
+                "callosal boosts. Drive the L hemisphere for 1 s, then R. "
+                "Watch activity propagate across the synthetic connectome."
+            ),
+            hyperparams={
+                "global_gain": 0.001,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "tanh",
+                "dt_sim": 2e-3,
+                "tau_default_ms": 100.0,
+                "n_regions": 30,
+                "stimulus": {
+                    "type": "hemispheric_switch",
+                    "switch_at_s": 1.0,
+                    "amplitude": 0.5,
+                },
+            },
+            stim_fn=stim,
+            stride=1,
+            min_radius=0.0,
+            n_frames=80,
+            target_scale=20.0,
+        ),
+    )
+
+
 # ---------------- Top-level driver -------------------------------------------
 
 
@@ -546,23 +695,27 @@ def main() -> None:
     )
     hd_outputs: list[ScenarioOutput] = []
     neuron_ids = [n.id for n in layout.subgraph.neurons]
-    for scenario_spec, payload in hd_ring_scenarios(
-        layout.subgraph, layout.angles, len(layout.subgraph.neurons), neuron_ids
+    for gen in (
+        hd_ring_scenarios(layout.subgraph, layout.angles, len(layout.subgraph.neurons), neuron_ids),
+        lif_hd_ring_scenarios(
+            layout.subgraph, layout.angles, len(layout.subgraph.neurons), neuron_ids
+        ),
     ):
-        path = out_dir / f"hd_ring_{scenario_spec.id}.json"
-        write_payload(payload, path)
-        size_kb = path.stat().st_size / 1024
-        hd_outputs.append(
-            ScenarioOutput(
-                dataset_id="hd_ring",
-                scenario_id=scenario_spec.id,
-                label=scenario_spec.label,
-                file=path.name,
-                description=scenario_spec.description,
-                size_kb=size_kb,
+        for scenario_spec, payload in gen:
+            path = out_dir / f"hd_ring_{scenario_spec.id}.json"
+            write_payload(payload, path)
+            size_kb = path.stat().st_size / 1024
+            hd_outputs.append(
+                ScenarioOutput(
+                    dataset_id="hd_ring",
+                    scenario_id=scenario_spec.id,
+                    label=scenario_spec.label,
+                    file=path.name,
+                    description=scenario_spec.description,
+                    size_kb=size_kb,
+                )
             )
-        )
-        print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
+            print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
 
     # ----- Mushroom body -----
     conn_mb = HemibrainConnectome(cache=cache, nt_by_type=MB_NT)
@@ -607,6 +760,49 @@ def main() -> None:
         )
         print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
 
+    # ----- DTI synthetic -----
+    print("\n[dti_synthetic]")
+    dti_dataset = DatasetSpec(
+        id="dti_synthetic",
+        label="Synthetic DTI brain (30 regions)",
+        summary=(
+            "Region-level connectome via diffusion-MRI tractography. "
+            "Each 'neuron' is one cortical parcel; weights are streamline counts."
+        ),
+        biology=(
+            "Diffusion-tensor imaging (DTI) infers white-matter fiber tracts "
+            "in living human / macaque brains by measuring water diffusion "
+            "direction on MRI. The resulting 'tractography' yields a "
+            "connectivity matrix between cortical parcels -- a connectome "
+            "at *region* resolution, not single neurons. The same Galvani "
+            "pipeline runs on it: Subgraph -> Parameterizer -> Simulator, "
+            "unchanged. This synthetic example mimics canonical DTI motifs: "
+            "log-normal streamline counts, dense intra-hemispheric "
+            "connectivity, sparser inter-hemispheric connectivity with a "
+            "strong 'homotopic' boost between mirror-image regions (the "
+            "callosal connections in real brains). Region nodes are rendered "
+            "as small 6-spoked stars at their centroids since DTI parcels "
+            "don't have skeleton morphology like single neurons."
+        ),
+        scenarios=[],
+    )
+    dti_outputs: list[ScenarioOutput] = []
+    for scenario_spec, payload in dti_scenarios():
+        path = out_dir / f"dti_{scenario_spec.id}.json"
+        write_payload(payload, path)
+        size_kb = path.stat().st_size / 1024
+        dti_outputs.append(
+            ScenarioOutput(
+                dataset_id="dti_synthetic",
+                scenario_id=scenario_spec.id,
+                label=scenario_spec.label,
+                file=path.name,
+                description=scenario_spec.description,
+                size_kb=size_kb,
+            )
+        )
+        print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
+
     # ----- Manifest -----
     manifest: dict[str, Any] = {
         "schema_version": 2,
@@ -641,6 +837,21 @@ def main() -> None:
                     for o in mb_outputs
                 ],
             },
+            {
+                "id": dti_dataset.id,
+                "label": dti_dataset.label,
+                "summary": dti_dataset.summary,
+                "biology": dti_dataset.biology,
+                "scenarios": [
+                    {
+                        "id": o.scenario_id,
+                        "label": o.label,
+                        "file": o.file,
+                        "description": o.description,
+                    }
+                    for o in dti_outputs
+                ],
+            },
         ],
     }
     manifest_path = out_dir / "manifest.json"
@@ -648,7 +859,7 @@ def main() -> None:
         json.dump(manifest, f, indent=2)
     print(f"\nwrote manifest: {manifest_path.relative_to(repo)}")
 
-    total = sum(o.size_kb for o in hd_outputs + mb_outputs)
+    total = sum(o.size_kb for o in hd_outputs + mb_outputs + dti_outputs)
     print(f"total payload size: {total / 1024:.2f} MiB")
 
 

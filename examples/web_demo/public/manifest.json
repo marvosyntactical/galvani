@@ -36,6 +36,12 @@
           "label": "Velocity integration: right-PEN pulse",
           "file": "hd_ring_velocity_right.json",
           "description": "Same as the left-PEN scenario but pulsing right-hemisphere PEN cells. The bump should move in the opposite angular direction."
+        },
+        {
+          "id": "lif_tracking",
+          "label": "LIF spikes: rotating stim",
+          "file": "hd_ring_lif_tracking.json",
+          "description": "Same hemibrain HD ring, but simulated with a leaky integrate-and-fire model: neurons have voltages that spike when they cross threshold, are reset, and refract for 2 ms. Activity shown is instantaneous spike rate."
         }
       ]
     },
@@ -56,6 +62,20 @@
           "label": "APL ablated (no inhibition)",
           "file": "mushroom_body_without_apl.json",
           "description": "Same input drive as the previous scenario, but APL's outgoing synapses are silenced. Without global inhibition, KC activity stays dense -- demonstrating APL's role in sparse coding."
+        }
+      ]
+    },
+    {
+      "id": "dti_synthetic",
+      "label": "Synthetic DTI brain (30 regions)",
+      "summary": "Region-level connectome via diffusion-MRI tractography. Each 'neuron' is one cortical parcel; weights are streamline counts.",
+      "biology": "Diffusion-tensor imaging (DTI) infers white-matter fiber tracts in living human / macaque brains by measuring water diffusion direction on MRI. The resulting 'tractography' yields a connectivity matrix between cortical parcels -- a connectome at *region* resolution, not single neurons. The same Galvani pipeline runs on it: Subgraph -> Parameterizer -> Simulator, unchanged. This synthetic example mimics canonical DTI motifs: log-normal streamline counts, dense intra-hemispheric connectivity, sparser inter-hemispheric connectivity with a strong 'homotopic' boost between mirror-image regions (the callosal connections in real brains). Region nodes are rendered as small 6-spoked stars at their centroids since DTI parcels don't have skeleton morphology like single neurons.",
+      "scenarios": [
+        {
+          "id": "hemispheric_drive",
+          "label": "Hemispheric drive switch",
+          "file": "dti_hemispheric_drive.json",
+          "description": "30-region synthetic DTI brain. Drive the left hemisphere for 1 second, then switch to the right. Activity propagates across the inter-hemispheric connections."
         }
       ]
     }

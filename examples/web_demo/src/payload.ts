@@ -40,6 +40,13 @@ export interface PayloadMetadata {
   duration: number;
 }
 
+export interface PayloadModel {
+  weights: number[][];
+  tau: number[];
+  bias: number[];
+  global_gain: number;
+}
+
 export interface Payload {
   metadata: PayloadMetadata;
   bbox: {
@@ -55,6 +62,8 @@ export interface Payload {
   /** Optional external-input drive, (n_frames, n_neurons). Present when
    *  the bake script knew the stimulus function for the scenario. */
   stim_signal?: number[][];
+  /** Optional weight matrix + tau + bias for in-browser re-simulation. */
+  model?: PayloadModel;
 }
 
 export interface ManifestScenario {
