@@ -176,6 +176,9 @@ class HemibrainConnectome:
         digest = hashlib.sha1(",".join(str(i) for i in sorted(body_ids)).encode()).hexdigest()[:16]
         return f"{self._ds_key()}.neurons.by_id.{digest}"
 
+    def _skeleton_cache_key(self, body_id: int) -> str:
+        return f"{self._ds_key()}.skeletons.{body_id}"
+
     # -- queries -------------------------------------------------------------
 
     def _fetch_neurons_df(self, *, type_label: str) -> pd.DataFrame:
@@ -280,6 +283,26 @@ class HemibrainConnectome:
             soma_position=_soma_position(row.get("somaLocation")),
             skeleton_path=None,
         )
+
+    def fetch_skeleton(self, body_id: int) -> pd.DataFrame:
+        """Return the SWC skeleton for one neuron as a DataFrame.
+
+        Columns follow the neuPrint convention: `rowId, x, y, z, radius,
+        link`, where `link` is the parent `rowId` (-1 for the root). All
+        coordinates are in nanometers.
+
+        Results are cached per-neuron under the parquet cache so the demo
+        and notebook scripts only pay the network cost once.
+        """
+        key = self._skeleton_cache_key(body_id)
+        if self._cache.has(key):
+            return self._cache.load(key)
+
+        client = self._ensure_client()
+        df = client.fetch_skeleton(body_id, format="pandas")
+        df = cast(pd.DataFrame, df)
+        self._cache.store(key, df)
+        return df
 
     def subgraph(self, neurons: Iterable[Neuron]) -> Subgraph:
         """Pull the synapse table among `neurons` and return a `Subgraph`."""

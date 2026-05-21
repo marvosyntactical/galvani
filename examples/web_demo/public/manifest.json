@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "datasets": [
+    {
+      "id": "hd_ring",
+      "label": "Fly HD ring (hemibrain)",
+      "summary": "130 neurons in the *Drosophila* central complex that encode the fly's heading direction. Persistent bump that tracks turns.",
+      "biology": "The HD (head-direction) ring lives in the central complex (CX) of the fly's brain -- specifically the ellipsoid body (EB) and protocerebral bridge (PB). EPG neurons tile the EB and form a ring-attractor topology: a single localised bump of activity marks the fly's current heading. PEN cells inject angular-velocity input that shifts the bump when the fly turns. Delta7 neurons provide broad inhibition that stabilises the bump shape. The circuit was first characterised by Seelig & Jayaraman 2015 (Nature) and Kim et al. 2017 (Science). What you're seeing is rate-model activity (one number per neuron per timestep) on each neuron's EM-traced skeleton from the hemibrain dataset.",
+      "scenarios": [
+        {
+          "id": "tracking",
+          "label": "Bump tracking",
+          "file": "hd_ring_tracking.json",
+          "description": "A rotating Gaussian stimulus (omega = 1 rad/s) drives the EB ring; the bump should follow the stimulus with a small phase lag. This is the canonical Kim et al. (2017) test."
+        },
+        {
+          "id": "existence",
+          "label": "Bump existence",
+          "file": "hd_ring_existence.json",
+          "description": "Stationary input centred at theta = pi/2. A localised bump should form at the input centre within ~100 ms."
+        },
+        {
+          "id": "persistence",
+          "label": "Bump persistence (stim then off)",
+          "file": "hd_ring_persistence.json",
+          "description": "Static stimulus for 300 ms then removed. Activity is sustained after the input goes away (the bump's amplitude persists, though its position drifts slightly toward a network attractor)."
+        },
+        {
+          "id": "velocity_left",
+          "label": "Velocity integration: left-PEN pulse",
+          "file": "hd_ring_velocity_left.json",
+          "description": "Establish a bump, then pulse left-hemisphere PEN cells. The bump shifts in one direction -- this is the asymmetric loop that lets the fly integrate angular velocity."
+        },
+        {
+          "id": "velocity_right",
+          "label": "Velocity integration: right-PEN pulse",
+          "file": "hd_ring_velocity_right.json",
+          "description": "Same as the left-PEN scenario but pulsing right-hemisphere PEN cells. The bump should move in the opposite angular direction."
+        }
+      ]
+    },
+    {
+      "id": "mushroom_body",
+      "label": "Fly mushroom body (subset)",
+      "summary": "~200 Kenyon cells + APL from the *Drosophila* mushroom body. Sparse coding via global inhibition.",
+      "biology": "The mushroom body (MB) is the fly's olfactory learning centre. Each odour activates a small fraction (~5%) of the ~1900 Kenyon cells (KCs) in hemibrain. This sparse code is enforced by APL (anterior paired lateral) -- a single GABAergic neuron that pools activity across all KCs and inhibits them in turn. The circuit is feedforward in the excitatory direction (projection neurons -> KCs -> mushroom-body output neurons), with APL providing the only recurrent loop. We show a random subsample of 20 KCs per subtype (~200 KCs) plus APL, both with APL intact and with APL's outgoing synapses ablated, to show APL's role.",
+      "scenarios": [
+        {
+          "id": "with_apl",
+          "label": "Sparse coding (APL intact)",
+          "file": "mushroom_body_with_apl.json",
+          "description": "Drive 30% of Kenyon cells with constant input. APL pools KC activity and inhibits in return, producing k-WTA sparse coding: only a few percent of KCs remain active at steady state."
+        },
+        {
+          "id": "without_apl",
+          "label": "APL ablated (no inhibition)",
+          "file": "mushroom_body_without_apl.json",
+          "description": "Same input drive as the previous scenario, but APL's outgoing synapses are silenced. Without global inhibition, KC activity stays dense -- demonstrating APL's role in sparse coding."
+        }
+      ]
+    }
+  ]
+}
