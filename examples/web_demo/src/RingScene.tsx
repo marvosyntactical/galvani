@@ -16,7 +16,9 @@ export interface HoverInfo {
 
 interface Props {
   payload: Payload;
-  frame: number;
+  /** Live frame index, mutated by the App's RAF loop. The Scene reads
+   *  `.current` each useFrame call -- no React state involved. */
+  frameRef: { current: number };
   renderMode: RenderMode;
   lineWidth?: number;
   onHover?: (info: HoverInfo | null) => void;
@@ -171,7 +173,7 @@ function NeuronTubes({
 
 export function RingScene({
   payload,
-  frame,
+  frameRef,
   renderMode,
   lineWidth = 2,
   onHover,
@@ -212,7 +214,11 @@ export function RingScene({
   }, [size.width, size.height, payload, renderMode]);
 
   useFrame(() => {
-    const t = Math.max(0, Math.min(payload.metadata.n_frames - 1, Math.round(frame)));
+    const f = frameRef.current;
+    const t = Math.max(
+      0,
+      Math.min(payload.metadata.n_frames - 1, Math.round(Number.isFinite(f) ? f : 0)),
+    );
     const row = payload.rates[t];
     const stimRow = payload.stim_signal?.[t];
     for (let i = 0; i < refs.current.length; i++) {
@@ -236,7 +242,11 @@ export function RingScene({
   };
 
   const handlePointerOver = (i: number) => (e: { clientX: number; clientY: number }) => {
-    const t = Math.max(0, Math.min(payload.metadata.n_frames - 1, Math.round(frame)));
+    const f = frameRef.current;
+    const t = Math.max(
+      0,
+      Math.min(payload.metadata.n_frames - 1, Math.round(Number.isFinite(f) ? f : 0)),
+    );
     onHover?.({
       neuronIndex: i,
       rate: payload.rates[t][i],

@@ -23,12 +23,21 @@ export default function App() {
   const [payloadLoading, setPayloadLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const [frame, setFrame] = useState(0);
+  // CRITICAL: `frame` lives in a ref, not React state.
+  // The RAF loop runs at 60 fps. If we used setState here, the App would
+  // re-render every 16 ms, which re-applies the `value` attribute on the
+  // <select> elements every frame. Native browser dropdowns close when the
+  // select gets touched -- this is why the dropdowns appeared to "flash open
+  // and disappear" before. The ref-based approach keeps the App tree stable
+  // during playback; only the 3D scene (which uses useFrame, not React state)
+  // reads the live frame value.
+  const frameRef = useRef(0);
+  // Throttled mirror of frameRef for the time-label readout. Updates at 10 Hz.
+  const [displayFrame, setDisplayFrame] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1.0);
   const [renderMode, setRenderMode] = useState<RenderMode>("lines");
   const [hover, setHover] = useState<HoverInfo | null>(null);
-  // Live-resim state: when non-null, overrides the baked rates.
   const [gainOverride, setGainOverride] = useState<number | null>(null);
   const [resimBusy, setResimBusy] = useState(false);
   const [customPayload, setCustomPayload] = useState<{ p: Payload; name: string } | null>(
@@ -70,7 +79,8 @@ export default function App() {
     if (customPayload) {
       setPayload(customPayload.p);
       setPayloadLoading(false);
-      setFrame(0);
+      frameRef.current = 0;
+      setDisplayFrame(0);
       setGainOverride(null);
       return;
     }
@@ -83,7 +93,8 @@ export default function App() {
       .then((p) => {
         if (cancelled) return;
         setPayload(p);
-        setFrame(0);
+        frameRef.current = 0;
+        setDisplayFrame(0);
         setPayloadLoading(false);
       })
       .catch((e) => {
@@ -113,6 +124,9 @@ export default function App() {
     return () => cancelAnimationFrame(handle);
   }, [gainOverride]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Playback RAF loop. Mutates frameRef.current directly -- no React state
+  // update, no re-render. This is the key to keeping the dropdowns
+  // interactive while playback runs.
   useEffect(() => {
     if (!payload) return;
     const totalFrames = payload.metadata.n_frames;
@@ -121,12 +135,11 @@ export default function App() {
       const elapsed = (now - lastTickRef.current) / 1000;
       lastTickRef.current = now;
       if (playing) {
-        setFrame((f) => {
-          const advance = (elapsed * speed) / realtimeSecPerFrame;
-          let next = f + advance;
-          if (next >= totalFrames) next = next % totalFrames;
-          return next;
-        });
+        const advance = (elapsed * speed) / realtimeSecPerFrame;
+        let next = frameRef.current + advance;
+        if (!Number.isFinite(next)) next = 0;
+        if (next >= totalFrames) next = next % totalFrames;
+        frameRef.current = next;
       }
       rafRef.current = requestAnimationFrame(tick);
     }
@@ -137,20 +150,30 @@ export default function App() {
     };
   }, [payload, playing, speed]);
 
+  // Throttled UI mirror of frameRef.current (10 Hz). Updates the scrubber's
+  // displayed time without triggering App re-renders on every animation
+  // frame.
+  useEffect(() => {
+    if (!payload) return;
+    const id = setInterval(() => {
+      setDisplayFrame((prev) => {
+        const next = frameRef.current;
+        // Avoid setState when the rounded display value hasn't changed.
+        return Math.round(next) === Math.round(prev) ? prev : next;
+      });
+    }, 100);
+    return () => clearInterval(id);
+  }, [payload]);
+
   if (err) return <div className="loading">Error: {err}</div>;
   if (!manifest || !dataset) return <div className="loading">Loading manifest…</div>;
 
-  // Frame can briefly fall out of range (e.g. NaN propagated through the
-  // RAF loop, or a scenario change leaving stale state) -- clamp defensively
-  // so the render never tries to .toFixed undefined.
-  const safeFrame = Number.isFinite(frame) ? frame : 0;
+  // UI-facing frame (already throttled to 10 Hz via displayFrame).
+  const safeFrame = Number.isFinite(displayFrame) ? displayFrame : 0;
   const currentFrame = payload
     ? Math.max(
         0,
-        Math.min(
-          payload.metadata.n_frames - 1,
-          Math.round(safeFrame),
-        ),
+        Math.min(payload.metadata.n_frames - 1, Math.round(safeFrame)),
       )
     : 0;
   const currentT = payload ? (payload.times[currentFrame] ?? 0) : 0;
@@ -182,7 +205,7 @@ export default function App() {
             <OrbitControls makeDefault enableDamping />
             <RingScene
               payload={payload}
-              frame={frame}
+              frameRef={frameRef}
               renderMode={renderMode}
               onHover={setHover}
               hoveredIndex={hover?.neuronIndex ?? null}
@@ -433,11 +456,13 @@ export default function App() {
             min={0}
             max={payload ? payload.metadata.n_frames - 1 : 1}
             step={0.001}
-            value={frame}
+            value={displayFrame}
             disabled={!payload}
             onChange={(e) => {
               setPlaying(false);
-              setFrame(parseFloat(e.target.value));
+              const next = parseFloat(e.target.value);
+              frameRef.current = next;
+              setDisplayFrame(next);
             }}
           />
           <span className="time-label">
