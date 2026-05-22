@@ -84,6 +84,27 @@ export interface ConductanceSchedule {
 }
 
 /**
+ * Discrete synapse between two neurons that are both being simulated in
+ * the bio neighborhood. When the pre target's AIS spikes, the solver
+ * injects a conductance kick at the post target's compartment. This is
+ * the within-neighborhood spike-coupling path: smooth conductance is
+ * already covering everything OUTSIDE the neighborhood, so these edges
+ * only describe couplings *between* targets.
+ */
+export interface IntraEdge {
+  /** Index into the targets array. */
+  preTargetIdx: number;
+  /** Index into the targets array. */
+  postTargetIdx: number;
+  /** Solver-compartment index on the post target. */
+  postCompartment: number;
+  /** Peak conductance kick on spike, nS. */
+  gPeakNs: number;
+  /** Reversal potential of this synapse, mV. */
+  eRevMv: number;
+}
+
+/**
  * Build a continuous conductance schedule for one target neuron.
  *
  * Walks every presynaptic neuron `pre` with non-zero `W[post, pre]`, picks
@@ -105,6 +126,11 @@ export function buildConductanceSchedule(
   bioDurationMs: number,
   bioFrameStrideMs: number = 1,
   config: SynapseRoutingConfig = {},
+  /** Outer-payload neuron indices to OMIT from the smooth conductance.
+   *  Used by the coupled-bio path: any neuron also being simulated in
+   *  the bio neighborhood drives its post via discrete intra-edges
+   *  instead, so it must be excluded here to avoid double-counting. */
+  excludeFromSmooth: ReadonlySet<number> | null = null,
 ): ConductanceSchedule {
   const W = payload.model?.weights;
   const nComp = postMorph.nCompartments;
@@ -150,6 +176,7 @@ export function buildConductanceSchedule(
   let compCursor = 0;
   for (let pre = 0; pre < NPop; pre++) {
     if (pre === postNeuronIdx) continue;
+    if (excludeFromSmooth && excludeFromSmooth.has(pre)) continue;
     const w = W[postNeuronIdx][pre];
     if (Math.abs(w) < 1e-6) continue;
     active.push({
@@ -210,6 +237,67 @@ export function buildConductanceSchedule(
   }
 
   return { gSyn, gSynRev, nFrames, nCompartments: nComp, dtMs: bioFrameStrideMs };
+}
+
+/**
+ * Build the within-neighborhood discrete-spike edges. For every pair of
+ * targets (pre, post) with non-zero outer weight, one edge that fires
+ * when pre's AIS spikes and deposits a conductance kick on the chosen
+ * post-compartment. Compartment assignment is round-robin over the post
+ * target's dendrites — same heuristic as the smooth schedule.
+ *
+ * `gPerWeightNs` here uses the *event* scaling (default 0.6 nS) rather
+ * than the smooth scaling (default 0.15) — discrete kicks contribute
+ * area under the conductance curve, not standing conductance.
+ */
+export function buildIntraEdges(
+  payload: Payload,
+  targetNeuronIndices: ReadonlyArray<number>,
+  morphsByTarget: ReadonlyArray<SolverMorphology>,
+  config: SynapseRoutingConfig = {},
+): IntraEdge[] {
+  const W = payload.model?.weights;
+  if (!W) return [];
+  const gPerWeight = config.gPerWeightNs ?? 0.6;
+  const eExc = config.eExcMv ?? 0;
+  const eInh = config.eInhMv ?? -75;
+
+  // Precompute per-post-target dendrite lists + a per-target round-robin
+  // cursor (so multiple pre's onto the same post land on different
+  // compartments rather than stacking all on the first dendrite).
+  const dendriticByTarget: number[][] = morphsByTarget.map((m) => {
+    const out: number[] = [];
+    for (let i = 0; i < m.nCompartments; i++) {
+      if (i === m.somaCompartment) continue;
+      if (i === m.aisCompartment) continue;
+      out.push(i);
+    }
+    if (out.length === 0) for (let i = 0; i < m.nCompartments; i++) out.push(i);
+    return out;
+  });
+  const cursorByTarget = new Int32Array(morphsByTarget.length);
+
+  const edges: IntraEdge[] = [];
+  for (let postIdx = 0; postIdx < targetNeuronIndices.length; postIdx++) {
+    const postNeuron = targetNeuronIndices[postIdx];
+    for (let preIdx = 0; preIdx < targetNeuronIndices.length; preIdx++) {
+      if (preIdx === postIdx) continue;
+      const preNeuron = targetNeuronIndices[preIdx];
+      const w = W[postNeuron][preNeuron];
+      if (Math.abs(w) < 1e-6) continue;
+      const dendrites = dendriticByTarget[postIdx];
+      const compartment = dendrites[cursorByTarget[postIdx] % dendrites.length];
+      cursorByTarget[postIdx]++;
+      edges.push({
+        preTargetIdx: preIdx,
+        postTargetIdx: postIdx,
+        postCompartment: compartment,
+        gPeakNs: Math.abs(w) * gPerWeight,
+        eRevMv: w >= 0 ? eExc : eInh,
+      });
+    }
+  }
+  return edges;
 }
 
 /**

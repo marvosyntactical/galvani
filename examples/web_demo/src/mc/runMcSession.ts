@@ -20,9 +20,15 @@ import type { NeuronDetail } from "../detailLoader";
 import { buildSolverCompartments, type SolverMorphology } from "./morphology";
 import {
   buildConductanceSchedule,
+  buildIntraEdges,
   type SynapseRoutingConfig,
 } from "./synapseRouter";
-import type { HhResult, HhRunConfig } from "./hhSolver";
+import type {
+  CoupledIntraEdge,
+  CoupledTarget,
+  HhResult,
+  HhRunConfig,
+} from "./hhSolver";
 
 export interface BioSessionRequest {
   payload: Payload;
@@ -82,17 +88,17 @@ async function spawnWorker(): Promise<Worker> {
   return new mod.default();
 }
 
-/** Run one target neuron in its own worker; returns when the worker
- *  finishes (`done`) or throws on error / abort. */
-function runOneInWorker(
+/** Run the whole neighborhood in one worker via the coupled solver.
+ *  Resolves once `doneCoupled` is received; rejects on `error` or abort. */
+function runCoupledInWorker(
   id: number,
-  morph: SolverMorphology,
+  targets: CoupledTarget[],
+  intraEdges: CoupledIntraEdge[],
   config: HhRunConfig,
-  schedule: ReturnType<typeof buildConductanceSchedule>,
   onProgress: (frac: number) => void,
   signal?: AbortSignal,
-): Promise<HhResult> {
-  return new Promise<HhResult>(async (resolve, reject) => {
+): Promise<HhResult[]> {
+  return new Promise<HhResult[]>(async (resolve, reject) => {
     let worker: Worker;
     try {
       worker = await spawnWorker();
@@ -115,15 +121,15 @@ function runOneInWorker(
     worker.onmessage = (e: MessageEvent) => {
       const msg = e.data as
         | { type: "progress"; id: number; fraction: number }
-        | { type: "done"; id: number; result: HhResult }
+        | { type: "doneCoupled"; id: number; results: HhResult[] }
         | { type: "error"; id: number; message: string };
       if (msg.id !== id) return;
       if (msg.type === "progress") {
         onProgress(msg.fraction);
-      } else if (msg.type === "done") {
+      } else if (msg.type === "doneCoupled") {
         signal?.removeEventListener("abort", abortHandler);
         worker.terminate();
-        resolve(msg.result);
+        resolve(msg.results);
       } else if (msg.type === "error") {
         signal?.removeEventListener("abort", abortHandler);
         worker.terminate();
@@ -137,12 +143,11 @@ function runOneInWorker(
     };
 
     worker.postMessage({
-      type: "run",
+      type: "runCoupled",
       id,
-      morph,
-      synEvents: [],
+      targets,
+      intraEdges,
       config,
-      gSchedule: schedule,
     });
   });
 }
@@ -172,54 +177,75 @@ export async function runBioSession(req: BioSessionRequest): Promise<BioSession>
     totalCompartments += m.nCompartments;
   }
 
-  // 2. Per-target smooth conductance schedule. C+D design: outside-the-
-  //    neighborhood drive enters as a slow per-compartment conductance
-  //    derived from the outer-sim rates around `anchorOuterMs`. No
-  //    Poisson sampling, no discrete events.
-  const progressByTarget = new Map<number, number>();
-  for (const idx of req.targetIndices) progressByTarget.set(idx, 0);
-  const reportProgress = () => {
-    if (!req.onProgress) return;
-    let sum = 0;
-    for (const f of progressByTarget.values()) sum += f;
-    req.onProgress(sum / Math.max(1, progressByTarget.size));
-  };
-
-  const workerJobs = req.targetIndices.map(async (idx) => {
-    const morph = morphs.get(idx)!;
-    const schedule = buildConductanceSchedule(
+  // 2. Build per-target smooth conductance schedules (C+D — outside-
+  //    neighborhood drive). Crucially, exclude every target's neuron
+  //    index from every other target's schedule: within-neighborhood
+  //    coupling is handled by discrete IntraEdges in step 3, so leaving
+  //    them in the smooth schedule would double-count.
+  const targetMorphList = req.targetIndices.map((idx) => morphs.get(idx)!);
+  const neighborhoodSet = new Set(req.targetIndices);
+  const schedules = req.targetIndices.map((idx, i) =>
+    buildConductanceSchedule(
       req.payload,
       idx,
-      morph,
+      targetMorphList[i],
       anchorOuterMs,
       bioDurationMs,
       /* bioFrameStrideMs */ 1,
       req.routing,
-    );
-    const hh = await runOneInWorker(
-      idx,
-      morph,
+      neighborhoodSet,
+    ),
+  );
+
+  // 3. Build the within-neighborhood discrete-spike edges: every pair
+  //    (pre, post) of targets with non-zero outer W gets an edge that
+  //    fires when pre's AIS spikes and deposits a conductance kick on a
+  //    chosen post-compartment.
+  const intraEdges = buildIntraEdges(
+    req.payload,
+    req.targetIndices,
+    targetMorphList,
+    req.routing,
+  );
+
+  // 4. Dispatch a single coupled-run request to one worker. The whole
+  //    neighborhood integrates together so spike events from any target
+  //    immediately affect every post target's gSyn within the same step.
+  const coupledTargets: CoupledTarget[] = targetMorphList.map((morph, i) => ({
+    morph,
+    gSchedule: schedules[i],
+  }));
+
+  let hhResults: HhResult[];
+  try {
+    hhResults = await runCoupledInWorker(
+      /* id */ 1,
+      coupledTargets,
+      intraEdges,
       config,
-      schedule,
-      (f) => {
-        progressByTarget.set(idx, f);
-        reportProgress();
-      },
+      (frac) => req.onProgress?.(frac),
       req.signal,
     );
-    progressByTarget.set(idx, 1);
-    reportProgress();
-    return { neuronIdx: idx, morph, hh } satisfies BioNeuronResult;
-  });
-
-  // 3. Collect results. Use allSettled so one failure doesn't drop the
-  //    whole batch — caller can decide whether to surface partial state.
-  const settled = await Promise.allSettled(workerJobs);
-  const results = new Map<number, BioNeuronResult>();
-  for (const s of settled) {
-    if (s.status === "fulfilled") {
-      results.set(s.value.neuronIdx, s.value);
+  } catch (err) {
+    if ((err as DOMException)?.name === "AbortError") {
+      return {
+        results: new Map(),
+        elapsedMs: performance.now() - start,
+        totalCompartments,
+        anchorOuterMs,
+        bioDurationMs,
+      };
     }
+    throw err;
+  }
+
+  // 5. Pair up results back to outer-payload neuron indices.
+  const results = new Map<number, BioNeuronResult>();
+  for (let i = 0; i < req.targetIndices.length; i++) {
+    const idx = req.targetIndices[i];
+    const morph = targetMorphList[i];
+    const hh = hhResults[i];
+    results.set(idx, { neuronIdx: idx, morph, hh });
   }
 
   return {

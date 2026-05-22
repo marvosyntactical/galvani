@@ -1,26 +1,24 @@
 /**
- * Web Worker entry point for one multi-compartment HH run.
+ * Web Worker entry point for the multi-compartment HH bio sim.
  *
- * The orchestrator (`runMcSession.ts`) spawns one worker per neuron in the
- * biophysical neighborhood. Each worker is self-contained: it receives a
- * pre-built `SolverMorphology`, a sorted SynEvent list, and a config, and
- * posts back voltage trace + AIS spike times.
+ * Two request shapes:
  *
- * Why a worker per neuron rather than a single worker for the whole
- * neighborhood: forward-Euler HH is mostly memory-bandwidth-bound on the
- * compartment count, so splitting into ~10 small simulations parallelises
- * cleanly across cores, while keeping each worker's state small enough
- * (< 1 MB) that postMessage transfer is cheap.
+ *   { type: "run" }       — single-neuron run via runMcHH. Used by the
+ *                           validation tests and as a fallback.
+ *   { type: "runCoupled" } — multi-neuron run via runCoupledMcHH, with
+ *                            within-neighborhood spike coupling. This is
+ *                            what the orchestrator uses now.
  *
- * Communication protocol:
- *   main → worker: { type: "run", id, morph, synEvents, config, iExt? }
- *   worker → main: { type: "progress", id, fraction }
- *                  { type: "done", id, result }
- *                  { type: "error", id, message }
+ * Replies for "runCoupled" come back as a single { type: "done", results }
+ * carrying every target's HhResult, since we need consistent V^n across
+ * the neighborhood — splitting across workers would lose the coupling.
  */
 
 import {
+  runCoupledMcHH,
   runMcHH,
+  type CoupledIntraEdge,
+  type CoupledTarget,
   type GScheduleInput,
   type HhResult,
   type HhRunConfig,
@@ -39,46 +37,70 @@ interface RunRequest {
   gSchedule?: GScheduleInput;
 }
 
+interface RunCoupledRequest {
+  type: "runCoupled";
+  id: number;
+  targets: CoupledTarget[];
+  intraEdges: CoupledIntraEdge[];
+  config: HhRunConfig;
+}
+
+type AnyRequest = RunRequest | RunCoupledRequest;
+
 type WorkerMsg =
   | { type: "progress"; id: number; fraction: number }
   | { type: "done"; id: number; result: HhResult }
+  | { type: "doneCoupled"; id: number; results: HhResult[] }
   | { type: "error"; id: number; message: string };
 
-self.onmessage = (e: MessageEvent<RunRequest>) => {
+self.onmessage = (e: MessageEvent<AnyRequest>) => {
   const msg = e.data;
-  if (msg.type !== "run") return;
-  const { id, morph, synEvents, config, iExt, gSchedule } = msg;
-
   let lastProgressPosted = 0;
-  try {
-    const result = runMcHH(
-      morph,
-      synEvents,
-      config,
-      iExt ?? null,
-      (fraction) => {
-        // Throttle progress messages so we don't flood the main thread
-        // when the inner loop is fast.
-        const now = performance.now();
-        if (now - lastProgressPosted < 80) return;
-        lastProgressPosted = now;
-        const out: WorkerMsg = { type: "progress", id, fraction };
-        self.postMessage(out);
-      },
-      gSchedule ?? null,
-    );
+  const reportProgress = (fraction: number) => {
+    const now = performance.now();
+    if (now - lastProgressPosted < 80) return;
+    lastProgressPosted = now;
+    const out: WorkerMsg = { type: "progress", id: msg.id, fraction };
+    self.postMessage(out);
+  };
 
-    // Transfer ownership of the big typed arrays to avoid copying.
-    const transferables: Transferable[] = [
-      result.voltageTrace.buffer,
-      result.frameTimesMs.buffer,
-    ];
-    const out: WorkerMsg = { type: "done", id, result };
-    self.postMessage(out, { transfer: transferables });
+  try {
+    if (msg.type === "run") {
+      const { id, morph, synEvents, config, iExt, gSchedule } = msg;
+      const result = runMcHH(
+        morph,
+        synEvents,
+        config,
+        iExt ?? null,
+        reportProgress,
+        gSchedule ?? null,
+      );
+      const out: WorkerMsg = { type: "done", id, result };
+      self.postMessage(out, {
+        transfer: [
+          result.voltageTrace.buffer,
+          result.frameTimesMs.buffer,
+        ],
+      });
+      return;
+    }
+
+    if (msg.type === "runCoupled") {
+      const { id, targets, intraEdges, config } = msg;
+      const out = runCoupledMcHH(targets, intraEdges, config, reportProgress);
+      const transferables: Transferable[] = [];
+      for (const r of out.results) {
+        transferables.push(r.voltageTrace.buffer);
+        transferables.push(r.frameTimesMs.buffer);
+      }
+      const reply: WorkerMsg = { type: "doneCoupled", id, results: out.results };
+      self.postMessage(reply, { transfer: transferables });
+      return;
+    }
   } catch (err) {
     const out: WorkerMsg = {
       type: "error",
-      id,
+      id: msg.id,
       message: err instanceof Error ? err.message : String(err),
     };
     self.postMessage(out);

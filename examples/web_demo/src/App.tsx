@@ -224,11 +224,17 @@ export default function App() {
     if (!payload) return;
     const totalFrames = payload.metadata.n_frames;
     const realtimeSecPerFrame = payload.metadata.duration / totalFrames;
+    // While bio view is on, the scrubber is repurposed for bio time and
+    // the user wants a slower default cadence to actually see spikes
+    // unfold. Halving the effective playback rate makes the dropdown's
+    // 1× behave like the previous 0.5×, 2× like the previous 1×, etc.
+    const BIO_PLAYBACK_FACTOR = 0.5;
+    const effectiveSpeed = bioVisible ? speed * BIO_PLAYBACK_FACTOR : speed;
     function tick(now: number) {
       const elapsed = (now - lastTickRef.current) / 1000;
       lastTickRef.current = now;
       if (playing) {
-        const advance = (elapsed * speed) / realtimeSecPerFrame;
+        const advance = (elapsed * effectiveSpeed) / realtimeSecPerFrame;
         let next = frameRef.current + advance;
         if (!Number.isFinite(next)) next = 0;
         if (next >= totalFrames) next = next % totalFrames;
@@ -241,7 +247,7 @@ export default function App() {
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [payload, playing, speed]);
+  }, [payload, playing, speed, bioVisible]);
 
   // Throttled UI mirror of frameRef.current (10 Hz). Updates the scrubber's
   // displayed time without triggering App re-renders on every animation

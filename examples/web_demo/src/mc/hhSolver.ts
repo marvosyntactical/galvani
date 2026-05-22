@@ -78,6 +78,26 @@ export interface GScheduleInput {
   dtMs: number;
 }
 
+/** Within-neighborhood discrete edge — see synapseRouter.buildIntraEdges. */
+export interface CoupledIntraEdge {
+  preTargetIdx: number;
+  postTargetIdx: number;
+  postCompartment: number;
+  gPeakNs: number;
+  eRevMv: number;
+}
+
+/** One target neuron passed to the coupled solver. */
+export interface CoupledTarget {
+  morph: SolverMorphology;
+  gSchedule: GScheduleInput | null;
+}
+
+/** Per-target result returned by `runCoupledMcHH`. */
+export interface CoupledResult {
+  results: HhResult[];
+}
+
 export interface HhRunConfig {
   /** Total simulation duration in ms. */
   durationMs: number;
@@ -413,5 +433,325 @@ export function runMcHH(
     frameTimesMs,
     aisSpikesMs,
     aisCompartment: aisIdx,
+  };
+}
+
+/**
+ * Coupled multi-neuron Hodgkin-Huxley solver — single-pass within-
+ * neighborhood spike coupling.
+ *
+ * Why one function vs. spawning N workers in parallel: a worker can't
+ * read another worker's spike events at integration cadence (every 25 μs)
+ * because the `postMessage` round-trip is two orders of magnitude
+ * slower. So if we want pre-target A's AIS spike to drive post-target
+ * B's dendrite *at the same biological instant* — which is the whole
+ * point of within-neighborhood coupling — we put A and B in the same
+ * solver loop.
+ *
+ * Each step proceeds in this order:
+ *
+ *   1. For every target, read V^n at its AIS, compare with prev V^n.
+ *      A rising-edge crossing → record an AIS spike for that target.
+ *      For each `IntraEdge` whose `preTargetIdx` just spiked, add a
+ *      conductance kick into the post target's per-compartment
+ *      `gSynEvt` / `gSynRevEvt` accumulator.
+ *   2. For every target, build its Hines diag/rhs from V^n + gating at
+ *      V^n + smooth schedule contribution + event accumulator. Solve.
+ *   3. For every target, decay the event accumulator by exp(−dt/τ_syn).
+ *
+ * Spike detection happens *before* any target's integration step, so
+ * the kicks land in `gSynEvt` of every relevant post target before any
+ * of them solve — V^n is consistent across the neighborhood at the
+ * spike-detection boundary, the kicks affect every post target's
+ * integration this step, and no target sees a half-updated mix of
+ * V^n + V^{n+1} from its neighbors.
+ */
+export function runCoupledMcHH(
+  targets: CoupledTarget[],
+  intraEdges: CoupledIntraEdge[],
+  config: HhRunConfig,
+  onProgress: ((fraction: number) => void) | null = null,
+): CoupledResult {
+  const nTargets = targets.length;
+  if (nTargets === 0) {
+    return { results: [] };
+  }
+
+  const dt = config.dtMs;
+  const totalSteps = Math.ceil(config.durationMs / dt);
+  const stride = Math.max(1, config.frameStride);
+  const nFrames = Math.floor(totalSteps / stride) + 1;
+  const synTauDecay = config.synTauDecayMs ?? 5.0;
+  const decayPerStep = Math.exp(-dt / synTauDecay);
+  const spikeThreshold = config.spikeThresholdMv ?? -20;
+  const minIsiMs = config.minIsiMs ?? 1.5;
+
+  // Per-target state. Same machinery as `runMcHH`, replicated N times.
+  type State = {
+    morph: SolverMorphology;
+    N: number;
+    v: Float32Array;
+    m: Float32Array;
+    h: Float32Array;
+    n: Float32Array;
+    gSynEvt: Float32Array;
+    gSynRevEvt: Float32Array;
+    diag: Float32Array;
+    rhs: Float32Array;
+    cap: Float32Array;
+    gNaMax: Float32Array;
+    gKMax: Float32Array;
+    gL: Float32Array;
+    axialSum: Float32Array;
+    gAxToParent: Float32Array;
+    parents: Int32Array;
+    aisIdx: number;
+    schedule: GScheduleInput | null;
+    voltageTrace: Float32Array;
+    frameTimesMs: Float32Array;
+    aisSpikesMs: number[];
+    lastSpikeMs: number;
+    prevAisV: number;
+    nextFrame: number;
+  };
+
+  const RA_FACTOR_NS = (1000 * Math.PI) / 1.5;
+
+  const states: State[] = targets.map((t) => {
+    const morph = t.morph;
+    const N = morph.nCompartments;
+    const radiusUm = new Float32Array(N);
+    const lengthUm = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      radiusUm[i] = morph.compartments[i].radiusNm / 1000;
+      lengthUm[i] = morph.compartments[i].lengthNm / 1000;
+    }
+    const surfaceUm2 = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      surfaceUm2[i] = 2 * Math.PI * radiusUm[i] * lengthUm[i];
+    }
+    const gNaMax = new Float32Array(N);
+    const gKMax = new Float32Array(N);
+    const gL = new Float32Array(N);
+    const cap = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const isAis = i === morph.aisCompartment;
+      const naDens = G_NA_DEFAULT_MS_PER_CM2 * (isAis ? AIS_BOOST : 1);
+      const kDens = G_K_DEFAULT_MS_PER_CM2 * (isAis ? AIS_BOOST : 1);
+      gNaMax[i] = naDens * 0.01 * surfaceUm2[i];
+      gKMax[i] = kDens * 0.01 * surfaceUm2[i];
+      gL[i] = G_L_DEFAULT_MS_PER_CM2 * 0.01 * surfaceUm2[i];
+      cap[i] = CM_UF_PER_CM2 * 0.01 * surfaceUm2[i];
+    }
+    const gAxToParent = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const p = morph.compartments[i].parent;
+      if (p < 0) continue;
+      const rMean = 0.5 * (radiusUm[i] + radiusUm[p]);
+      const lMean = 0.5 * (lengthUm[i] + lengthUm[p]);
+      gAxToParent[i] = (RA_FACTOR_NS * rMean * rMean) / Math.max(lMean, 1e-3);
+    }
+    const axialSum = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const p = morph.compartments[i].parent;
+      if (p < 0) continue;
+      axialSum[i] += gAxToParent[i];
+      axialSum[p] += gAxToParent[i];
+    }
+    const parents = new Int32Array(N);
+    for (let i = 0; i < N; i++) parents[i] = morph.compartments[i].parent;
+    const aisIdx = morph.aisCompartment >= 0 ? morph.aisCompartment : morph.somaCompartment;
+    return {
+      morph,
+      N,
+      v: new Float32Array(N).fill(V_REST_MV),
+      m: new Float32Array(N).fill(M_REST),
+      h: new Float32Array(N).fill(H_REST),
+      n: new Float32Array(N).fill(N_REST),
+      gSynEvt: new Float32Array(N),
+      gSynRevEvt: new Float32Array(N),
+      diag: new Float32Array(N),
+      rhs: new Float32Array(N),
+      cap,
+      gNaMax,
+      gKMax,
+      gL,
+      axialSum,
+      gAxToParent,
+      parents,
+      aisIdx,
+      schedule: t.gSchedule,
+      voltageTrace: new Float32Array(nFrames * N),
+      frameTimesMs: new Float32Array(nFrames),
+      aisSpikesMs: [] as number[],
+      lastSpikeMs: -Infinity,
+      prevAisV: V_REST_MV,
+      nextFrame: 0,
+    };
+  });
+
+  // Group intra-edges by pre target so the spike-detection step can
+  // look up affected post targets in O(degree) rather than scanning all
+  // edges.
+  const edgesByPre: CoupledIntraEdge[][] = Array.from({ length: nTargets }, () => []);
+  for (const e of intraEdges) edgesByPre[e.preTargetIdx].push(e);
+
+  let nextProgress = performance.now();
+  const reportEveryMs = 100;
+  const dtRecip = 1.0 / dt;
+
+  for (let step = 0; step <= totalSteps; step++) {
+    const tMs = step * dt;
+
+    // ---- 1. Spike detection (V^n) across every target. Each detected
+    //         spike deposits kicks into post targets' event accumulators
+    //         BEFORE any integration step starts, so V^n consistency
+    //         holds for the kicks too.
+    for (let t = 0; t < nTargets; t++) {
+      const s = states[t];
+      const aisV = s.v[s.aisIdx];
+      if (
+        aisV >= spikeThreshold &&
+        s.prevAisV < spikeThreshold &&
+        tMs - s.lastSpikeMs > minIsiMs
+      ) {
+        s.aisSpikesMs.push(tMs);
+        s.lastSpikeMs = tMs;
+        const outs = edgesByPre[t];
+        for (let e = 0; e < outs.length; e++) {
+          const edge = outs[e];
+          const post = states[edge.postTargetIdx];
+          post.gSynEvt[edge.postCompartment] += edge.gPeakNs;
+          post.gSynRevEvt[edge.postCompartment] += edge.gPeakNs * edge.eRevMv;
+        }
+      }
+      s.prevAisV = aisV;
+    }
+
+    // ---- 2. Frame snapshot per target.
+    if (step % stride === 0) {
+      for (let t = 0; t < nTargets; t++) {
+        const s = states[t];
+        if (s.nextFrame < nFrames) {
+          s.voltageTrace.set(s.v, s.nextFrame * s.N);
+          s.frameTimesMs[s.nextFrame] = tMs;
+          s.nextFrame++;
+        }
+      }
+      if (onProgress && performance.now() > nextProgress) {
+        onProgress(step / totalSteps);
+        nextProgress = performance.now() + reportEveryMs;
+      }
+    }
+
+    // ---- 3. Per-target Hines integration. Each target's system is
+    //         independent (block-diagonal across the multi-neuron
+    //         linear system, since coupling enters through the
+    //         conductance accumulators only, not via axial currents).
+    for (let t = 0; t < nTargets; t++) {
+      const s = states[t];
+      const N = s.N;
+      const v = s.v;
+      const m = s.m;
+      const h = s.h;
+      const nGate = s.n;
+      const diag = s.diag;
+      const rhs = s.rhs;
+      const cap = s.cap;
+      const gNaMax = s.gNaMax;
+      const gKMax = s.gKMax;
+      const gL = s.gL;
+      const axialSum = s.axialSum;
+      const gAxToParent = s.gAxToParent;
+      const parents = s.parents;
+      const gSynEvt = s.gSynEvt;
+      const gSynRevEvt = s.gSynRevEvt;
+      const sched = s.schedule;
+      let schedFrame = -1;
+      if (sched !== null) {
+        schedFrame = Math.min(sched.nFrames - 1, Math.floor(tMs / sched.dtMs));
+      }
+
+      for (let i = 0; i < N; i++) {
+        const vi = v[i];
+        const iNa = gNaMax[i] * m[i] * m[i] * m[i] * h[i] * (vi - E_NA_MV);
+        const iK = gKMax[i] * nGate[i] * nGate[i] * nGate[i] * nGate[i] * (vi - E_K_MV);
+        let gSchedI = 0;
+        let gSchedRevI = 0;
+        if (sched !== null && schedFrame >= 0) {
+          const so = schedFrame * sched.nCompartments + i;
+          gSchedI = sched.gSyn[so];
+          gSchedRevI = sched.gSynRev[so];
+        }
+        diag[i] =
+          cap[i] * dtRecip + axialSum[i] + gL[i] + gSynEvt[i] + gSchedI;
+        rhs[i] =
+          cap[i] * dtRecip * vi -
+          iNa -
+          iK +
+          gL[i] * E_L_MV +
+          gSynRevEvt[i] +
+          gSchedRevI;
+
+        const aM = alphaM(vi);
+        const bM = betaM(vi);
+        const aH = alphaH(vi);
+        const bH = betaH(vi);
+        const aN = alphaN(vi);
+        const bN = betaN(vi);
+        m[i] += dt * (aM * (1 - m[i]) - bM * m[i]);
+        h[i] += dt * (aH * (1 - h[i]) - bH * h[i]);
+        nGate[i] += dt * (aN * (1 - nGate[i]) - bN * nGate[i]);
+        if (m[i] < 0) m[i] = 0; else if (m[i] > 1) m[i] = 1;
+        if (h[i] < 0) h[i] = 0; else if (h[i] > 1) h[i] = 1;
+        if (nGate[i] < 0) nGate[i] = 0; else if (nGate[i] > 1) nGate[i] = 1;
+      }
+
+      // Forward elimination (leaves → root).
+      for (let i = N - 1; i >= 1; i--) {
+        const p = parents[i];
+        if (p < 0) continue;
+        const g = gAxToParent[i];
+        const ratio = g / diag[i];
+        diag[p] -= g * ratio;
+        rhs[p] += ratio * rhs[i];
+      }
+      // Back-substitution.
+      for (let i = 0; i < N; i++) {
+        const p = parents[i];
+        if (p < 0) {
+          v[i] = rhs[i] / diag[i];
+        } else {
+          v[i] = (rhs[i] + gAxToParent[i] * v[p]) / diag[i];
+        }
+      }
+    }
+
+    // ---- 4. Decay the event accumulators on every target. (The
+    //         schedule contribution doesn't decay — it's sampled fresh
+    //         each step.)
+    for (let t = 0; t < nTargets; t++) {
+      const s = states[t];
+      const N = s.N;
+      const gSynEvt = s.gSynEvt;
+      const gSynRevEvt = s.gSynRevEvt;
+      for (let i = 0; i < N; i++) {
+        gSynEvt[i] *= decayPerStep;
+        gSynRevEvt[i] *= decayPerStep;
+      }
+    }
+  }
+
+  if (onProgress) onProgress(1.0);
+
+  return {
+    results: states.map((s) => ({
+      voltageTrace: s.voltageTrace,
+      nFrames: s.nextFrame,
+      nCompartments: s.N,
+      frameTimesMs: s.frameTimesMs,
+      aisSpikesMs: s.aisSpikesMs,
+      aisCompartment: s.aisIdx,
+    })),
   };
 }
