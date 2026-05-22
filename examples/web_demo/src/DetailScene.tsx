@@ -9,10 +9,10 @@ import { baseColorFor } from "./cellTypes";
 export interface CompanionNeuron {
   detail: NeuronDetail;
   neuronIndex: number;
-  /** Direction relative to the focused neuron. */
+  /** Direction relative to the focused neuron. Kept in the data even
+   *  though we no longer differentiate visually -- the sidebar lists the
+   *  top-5 incoming explicitly. */
   role: "incoming" | "outgoing";
-  /** Whether this companion receives external stimulus at any frame. */
-  isStimInput: boolean;
 }
 
 interface Props {
@@ -29,17 +29,12 @@ const _Y = new THREE.Vector3(0, 1, 0);
 
 const SPHERE_GEOM = new THREE.SphereGeometry(1, 12, 8);
 
-/* Subdued tints for companions, blended with the cell-type baseColor. */
-const INCOMING_TINT = new THREE.Color("#4dd6ff"); // cyan
-const OUTGOING_TINT = new THREE.Color("#7ee87a"); // green
-const FOCUS_TINT = new THREE.Color("#ffd95c"); // gold
-
 /**
- * Renders one focused neuron at full SWC resolution, optionally surrounded
- * by its top-k incoming + outgoing companions. The focus neuron is gold;
- * incoming-to-focus get a cyan tint; outgoing-from-focus get a green tint.
- * Per-frame activity modulates brightness for every neuron. Stim-input
- * companions get an extra magenta halo.
+ * Renders the focused neuron at full SWC resolution, optionally with its
+ * top-k connected companions at reduced opacity. Companions use their
+ * own cell-type baseline color (same as in the overview). No tinting and
+ * no stim halos -- the explainer panel in the sidebar lists incoming and
+ * outgoing connections explicitly, so the 3D scene stays clean.
  */
 export function DetailScene({
   detail,
@@ -64,7 +59,7 @@ export function DetailScene({
     <group>
       <NeuronMesh
         detail={detail}
-        baseColor={mixColors(baseColorFor(payload.neurons[neuronIndex].cell_type), FOCUS_TINT, 0.5)}
+        baseColor={baseColorFor(payload.neurons[neuronIndex].cell_type)}
         index={neuronIndex}
         payload={payload}
         frameRef={frameRef}
@@ -73,35 +68,22 @@ export function DetailScene({
         opacity={1.0}
         emissiveBoost={0.5}
       />
-      {companions.map((c) => {
-        const tint = c.role === "incoming" ? INCOMING_TINT : OUTGOING_TINT;
-        const base = mixColors(
-          baseColorFor(payload.neurons[c.neuronIndex].cell_type),
-          tint,
-          0.6,
-        );
-        return (
-          <NeuronMesh
-            key={`${c.role}-${c.neuronIndex}`}
-            detail={c.detail}
-            baseColor={base}
-            index={c.neuronIndex}
-            payload={payload}
-            frameRef={frameRef}
-            maxRate={maxRate}
-            maxStim={maxStim}
-            opacity={0.35}
-            emissiveBoost={0.15}
-            stimHalo={c.isStimInput}
-          />
-        );
-      })}
+      {companions.map((c) => (
+        <NeuronMesh
+          key={`c-${c.neuronIndex}`}
+          detail={c.detail}
+          baseColor={baseColorFor(payload.neurons[c.neuronIndex].cell_type)}
+          index={c.neuronIndex}
+          payload={payload}
+          frameRef={frameRef}
+          maxRate={maxRate}
+          maxStim={maxStim}
+          opacity={0.18}
+          emissiveBoost={0.05}
+        />
+      ))}
     </group>
   );
-}
-
-function mixColors(a: THREE.Color, b: THREE.Color, t: number): THREE.Color {
-  return new THREE.Color().copy(a).lerp(b, t);
 }
 
 interface MeshProps {
@@ -114,7 +96,6 @@ interface MeshProps {
   maxStim: number;
   opacity: number;
   emissiveBoost: number;
-  stimHalo?: boolean;
 }
 
 function NeuronMesh({
@@ -127,11 +108,9 @@ function NeuronMesh({
   maxStim,
   opacity,
   emissiveBoost,
-  stimHalo,
 }: MeshProps) {
   const cylRef = useRef<THREE.InstancedMesh>(null);
   const sphRef = useRef<THREE.InstancedMesh>(null);
-  const haloRef = useRef<THREE.Mesh>(null);
   const { positions, radii, edges } = detail;
   const nNodes = detail.n_nodes;
   const nSegs = edges.length / 2;
@@ -180,19 +159,6 @@ function NeuronMesh({
     }
     sphMesh.instanceMatrix.needsUpdate = true;
   }, [edges, positions, radii, nNodes, nSegs]);
-
-  // Compute the neuron's centroid for halo placement.
-  const centroid = useMemo(() => {
-    let cx = 0,
-      cy = 0,
-      cz = 0;
-    for (let i = 0; i < nNodes; i++) {
-      cx += positions[i * 3];
-      cy += positions[i * 3 + 1];
-      cz += positions[i * 3 + 2];
-    }
-    return new THREE.Vector3(cx / nNodes, cy / nNodes, cz / nNodes);
-  }, [positions, nNodes]);
 
   const tmp = useMemo(() => new THREE.Color(), []);
   useFrame(() => {
@@ -243,17 +209,6 @@ function NeuronMesh({
           opacity={opacity}
         />
       </instancedMesh>
-      {stimHalo && (
-        <mesh ref={haloRef} position={centroid}>
-          <sphereGeometry args={[0.3, 16, 12]} />
-          <meshBasicMaterial
-            color="#ff5cb0"
-            transparent
-            opacity={0.18}
-            depthWrite={false}
-          />
-        </mesh>
-      )}
     </group>
   );
 }

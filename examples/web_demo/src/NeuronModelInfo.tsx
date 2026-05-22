@@ -115,16 +115,35 @@ export function NeuronModelInfo({
         ← Back to full view
       </button>
 
+      {/* Show-neighbors control, top of the panel so it's discoverable */}
+      <div className="neighbors-control">
+        <label className="neighbors-toggle">
+          <input
+            type="checkbox"
+            checked={showConnected}
+            onChange={(e) => onToggleConnected(e.target.checked)}
+          />
+          <span>Show neighbors</span>
+        </label>
+        {showConnected && (
+          <div className="neighbors-k">
+            <span className="k-label">top k = {connectedK}</span>
+            <input
+              type="range"
+              min={1}
+              max={15}
+              value={connectedK}
+              onChange={(e) => onChangeK(parseInt(e.target.value, 10))}
+            />
+          </div>
+        )}
+      </div>
+
       <div className="detail-header">
         <h2 style={{ color: `#${info?.baseColor.getHexString() ?? "ffffff"}` }}>
           {info?.shortLabel ?? neuron.cell_type}
           {isStimInput && (
-            <span
-              className="badge"
-              style={{ marginLeft: 8, background: "#ff5cb0", color: "white" }}
-            >
-              stim input
-            </span>
+            <span className="stim-badge">stim input</span>
           )}
         </h2>
         <div className="params-table" style={{ marginTop: 6 }}>
@@ -205,51 +224,8 @@ export function NeuronModelInfo({
 
       {connectivity && (
         <div className="detail-section">
-          <h3>Connected neurons</h3>
-          <div className="connected-controls">
-            <label>
-              <input
-                type="checkbox"
-                checked={showConnected}
-                onChange={(e) => onToggleConnected(e.target.checked)}
-              />
-              Show top-k connected
-            </label>
-          </div>
-          {showConnected && (
-            <>
-              <div className="connected-controls">
-                <span className="k-label">k = {connectedK}</span>
-                <input
-                  type="range"
-                  min={1}
-                  max={Math.min(15, Math.min(connectivity.n_in, connectivity.n_out))}
-                  value={connectedK}
-                  onChange={(e) => onChangeK(parseInt(e.target.value, 10))}
-                />
-              </div>
-              <div className="connected-legend">
-                <div className="row">
-                  <span className="dot dot-focus" /> focused
-                </div>
-                <div className="row">
-                  <span className="dot dot-in" /> incoming (→ this)
-                </div>
-                <div className="row">
-                  <span className="dot dot-out" /> outgoing (← this)
-                </div>
-                <div className="row">
-                  <span className="dot dot-stim" /> stim input
-                </div>
-              </div>
-              <p style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
-                Brightness still encodes firing rate; opacity reduced on
-                companions. Loading each companion fetches one ~300 KB
-                skeleton file.
-              </p>
-            </>
-          )}
-          <div className="params-table" style={{ marginTop: 10 }}>
+          <h3>Connectivity</h3>
+          <div className="params-table">
             <span className="label">incoming edges</span>
             <span className="value">{connectivity.n_in}</span>
             <span className="label">outgoing edges</span>

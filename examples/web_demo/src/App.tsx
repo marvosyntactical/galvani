@@ -219,19 +219,6 @@ export default function App() {
     const topIn = incoming.slice(0, connectedK).map((e) => e.idx);
     const topOut = outgoing.slice(0, connectedK).map((e) => e.idx);
 
-    // Stimulus-input set: any neuron with non-zero stim across time.
-    const stimSet = new Set<number>();
-    if (payload.stim_signal) {
-      for (let i = 0; i < N; i++) {
-        for (const row of payload.stim_signal) {
-          if (Math.abs(row[i]) > 1e-4) {
-            stimSet.add(i);
-            break;
-          }
-        }
-      }
-    }
-
     const baseUrl = import.meta.env.BASE_URL;
     setCompanionsLoading(true);
     let cancelled = false;
@@ -243,12 +230,7 @@ export default function App() {
           nrn.id,
           baseUrl,
         );
-        return {
-          detail: d,
-          neuronIndex: idx,
-          role: "incoming" as const,
-          isStimInput: stimSet.has(idx),
-        };
+        return { detail: d, neuronIndex: idx, role: "incoming" as const };
       }),
       ...topOut.map(async (idx) => {
         const nrn = payload.neurons[idx];
@@ -257,12 +239,7 @@ export default function App() {
           nrn.id,
           baseUrl,
         );
-        return {
-          detail: d,
-          neuronIndex: idx,
-          role: "outgoing" as const,
-          isStimInput: stimSet.has(idx),
-        };
+        return { detail: d, neuronIndex: idx, role: "outgoing" as const };
       }),
     ])
       .then((arr) => {
@@ -352,7 +329,14 @@ export default function App() {
       <div className="canvas-host">
         {payload && (
           <Canvas
-            camera={{ position: [12, 8, 12], fov: 50, near: 0.1, far: 200 }}
+            // DTI brain looks best from the side (sagittal-like view).
+            // The HD ring / MB look best from the default upper-front angle.
+            key={`canvas-${payload.metadata.dataset_id}`}
+            camera={
+              payload.metadata.dataset_id.startsWith("dti")
+                ? { position: [40, 8, 0], fov: 35, near: 0.1, far: 500 }
+                : { position: [12, 8, 12], fov: 50, near: 0.1, far: 200 }
+            }
             dpr={[1, 2]}
             gl={{ antialias: true }}
           >
@@ -735,6 +719,7 @@ export default function App() {
         </div>
         <Dropdown<number>
           value={speed}
+          openDirection="up"
           options={[
             { value: 0.05, label: "0.05× (very slow)" },
             { value: 0.1, label: "0.1×" },

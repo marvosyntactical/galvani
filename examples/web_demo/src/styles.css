@@ -137,7 +137,6 @@ body {
 }
 .cd-menu {
   position: absolute;
-  top: calc(100% + 4px);
   left: 0;
   right: 0;
   margin: 0;
@@ -150,6 +149,13 @@ body {
   max-height: 280px;
   overflow-y: auto;
   z-index: 100;
+}
+.cd-menu-down {
+  top: calc(100% + 4px);
+}
+.cd-menu-up {
+  bottom: calc(100% + 4px);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.5);
 }
 .cd-menu li {
   padding: 6px 12px;
@@ -539,7 +545,61 @@ body {
   margin-top: 0;
 }
 
-/* Connected-neurons toggle */
+/* Top-of-detail-panel "Show neighbors" control */
+.neighbors-control {
+  background: rgba(88, 166, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.neighbors-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.neighbors-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.neighbors-k {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.neighbors-k .k-label {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 70px;
+}
+.neighbors-k input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.stim-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  background: rgba(255, 92, 176, 0.2);
+  color: #ff5cb0;
+  border: 1px solid #ff5cb0;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+/* Connected-neurons toggle (legacy, used in main sidebar) */
 .connected-controls {
   display: flex;
   align-items: center;

@@ -27,6 +27,9 @@ interface Props<T extends string | number> {
   options: DropdownOption<T>[];
   onChange: (next: T) => void;
   disabled?: boolean;
+  /** Where the menu opens. "down" (default) or "up" for dropdowns near the
+   *  bottom edge of the viewport. */
+  openDirection?: "down" | "up";
 }
 
 export function Dropdown<T extends string | number>({
@@ -35,6 +38,7 @@ export function Dropdown<T extends string | number>({
   options,
   onChange,
   disabled = false,
+  openDirection = "down",
 }: Props<T>) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -72,7 +76,10 @@ export function Dropdown<T extends string | number>({
         <span className="cd-caret">{open ? "▴" : "▾"}</span>
       </button>
       {open && (
-        <ul className="cd-menu" role="listbox">
+        <ul
+          className={`cd-menu cd-menu-${openDirection}`}
+          role="listbox"
+        >
           {options.map((opt) => (
             <li
               key={String(opt.value)}

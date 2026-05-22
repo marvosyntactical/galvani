@@ -38,6 +38,12 @@
           "description": "Same as the left-PEN scenario but pulsing right-hemisphere PEN cells. The bump should move in the opposite angular direction."
         },
         {
+          "id": "story",
+          "label": "A short HD story (6 s)",
+          "file": "hd_ring_story.json",
+          "description": "6-second composite scenario: brief stim east, free drift, brief stim west, free drift, L-PEN pulse, free drift again. Lets you see how the ring transitions between attractor states and how PEN cells inject angular velocity."
+        },
+        {
           "id": "lif_tracking",
           "label": "LIF spikes: rotating stim",
           "file": "hd_ring_lif_tracking.json",
@@ -62,6 +68,12 @@
           "label": "APL ablated (no inhibition)",
           "file": "mushroom_body_without_apl.json",
           "description": "Same input drive as the previous scenario, but APL's outgoing synapses are silenced. Without global inhibition, KC activity stays dense -- demonstrating APL's role in sparse coding."
+        },
+        {
+          "id": "three_odors",
+          "label": "Three odor presentations",
+          "file": "mushroom_body_three_odors.json",
+          "description": "Three distinct 'odor' patterns presented in sequence (each activates a different random ~30% of KCs). Between odors, activity decays back via APL inhibition. Shows how each odor recruits a distinct sparse subset."
         }
       ]
     },
@@ -76,6 +88,12 @@
           "label": "Drive visual cortex \u2192 propagation",
           "file": "dti_hcp_visual_drive.json",
           "description": "REAL human DTI connectome (94 AAL2 regions, HCP subject NAP_001 via the neurolib dataset). Drive the visual-cortex regions; activity propagates into the rest of the brain through real white-matter streamline counts."
+        },
+        {
+          "id": "region_walk",
+          "label": "Frontal \u2192 Motor \u2192 Visual walk",
+          "file": "dti_hcp_region_walk.json",
+          "description": "Sequentially drive Frontal cortex (0-1 s), then primary Motor (1.5-2.5 s), then Visual (3-4 s). Lets you watch activity spread through the real white-matter network as the input target moves around the brain."
         }
       ]
     }

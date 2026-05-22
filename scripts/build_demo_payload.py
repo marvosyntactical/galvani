@@ -334,6 +334,85 @@ def hd_ring_scenarios(subgraph: Subgraph, angles, n_neurons: int, neuron_ids: li
         ),
     )
 
+    # 5) Long story: short heading change → drift → counter-pulse → drift
+    # Tells a story over ~6 seconds instead of a static rotation.
+    n_neurons_local = len(neurons)
+    bump_a = ring_stimulus(angles, center=0.0, width=0.5, amplitude=0.4)
+    bump_b = ring_stimulus(angles, center=np.pi, width=0.5, amplitude=0.4)
+
+    def stim_story(t: float, n=n_neurons_local) -> np.ndarray:
+        # 0.0 - 0.4 s: drive at theta=0 (fly faces east)
+        # 0.4 - 2.0 s: free evolution (no input)
+        # 2.0 - 2.4 s: drive at theta=pi (fly turned around)
+        # 2.4 - 4.0 s: free evolution
+        # 4.0 - 5.0 s: pulse L-PEN to rotate the bump
+        # 5.0 - 6.0 s: free evolution
+        if t < 0.4:
+            return bump_a(t)
+        if 2.0 <= t < 2.4:
+            return bump_b(t)
+        if 4.0 <= t < 5.0:
+            base = np.zeros(n)
+            base[
+                [
+                    i
+                    for i, nn in enumerate(neurons)
+                    if nn.cell_type in ("PEN_a(PEN1)", "PEN_b(PEN2)") and nn.hemisphere == "L"
+                ]
+            ] = 0.5
+            return base
+        return np.zeros(n)
+
+    result_story = simulate(spec, duration=6.0, stimulus=stim_story, activation=tanh, dt=2e-4)
+    yield (
+        ScenarioSpec(
+            id="story",
+            label="A short HD story (6 s)",
+            description=(
+                "6-second composite scenario: brief stim east, free drift, "
+                "brief stim west, free drift, L-PEN pulse, free drift again. "
+                "Lets you see how the ring transitions between attractor states "
+                "and how PEN cells inject angular velocity."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_story,
+            skeleton_provider=_PROVIDER,
+            spec=spec,
+            dataset_id="hd_ring",
+            scenario_id="story",
+            scenario_label="HD story · short stims + drift",
+            description=(
+                "A 6-second composite scenario combining everything: brief "
+                "pulse at θ=0, free drift, brief pulse at θ=π (fly turned 180°), "
+                "free drift, then a left-PEN pulse demonstrating velocity "
+                "integration. Each phase lasts a few hundred ms; in between, "
+                "the ring evolves freely so you can see how persistent it is "
+                "and how it transitions between heading states."
+            ),
+            hyperparams={
+                **common_hp,
+                "stimulus": {
+                    "type": "composite",
+                    "phases": [
+                        {"t": [0.0, 0.4], "kind": "bump", "center_rad": 0.0},
+                        {"t": [0.4, 2.0], "kind": "free"},
+                        {"t": [2.0, 2.4], "kind": "bump", "center_rad": float(np.pi)},
+                        {"t": [2.4, 4.0], "kind": "free"},
+                        {"t": [4.0, 5.0], "kind": "pulse", "target": "PEN_L"},
+                        {"t": [5.0, 6.0], "kind": "free"},
+                    ],
+                },
+            },
+            angles=angles,
+            stim_fn=stim_story,
+            stride=40,
+            min_radius=8.0,
+            n_frames=180,
+        ),
+    )
+
 
 # ---------------- Mushroom body (subset) -------------------------------------
 
@@ -506,6 +585,73 @@ def mushroom_body_scenarios(conn: HemibrainConnectome):
         ),
     )
 
+    # Three-odor sequence: a different random ~30% of KCs fires at each
+    # odor presentation, separated by quiet gaps so you can see the sparse
+    # code re-form each time.
+    rng3 = np.random.default_rng(13)
+    odors = [rng3.choice(kc_local_indices, size=int(0.30 * n_kc), replace=False) for _ in range(3)]
+    pattern_odors = []
+    for chosen_idx in odors:
+        p = np.zeros(spec_with.n_neurons, dtype=np.float64)
+        p[chosen_idx] = 0.5
+        pattern_odors.append(p)
+
+    def stim_3odors(t: float) -> np.ndarray:
+        # Three 0.15 s odor pulses at t = 0.05, 0.45, 0.85, gaps in between.
+        if 0.05 <= t < 0.20:
+            return pattern_odors[0]
+        if 0.45 <= t < 0.60:
+            return pattern_odors[1]
+        if 0.85 <= t < 1.00:
+            return pattern_odors[2]
+        return np.zeros(spec_with.n_neurons, dtype=np.float64)
+
+    result_3odors = simulate(
+        spec_with, duration=1.2, stimulus=stim_3odors, activation=relu, dt=5e-4
+    )
+    yield (
+        ScenarioSpec(
+            id="three_odors",
+            label="Three odor presentations",
+            description=(
+                "Three distinct 'odor' patterns presented in sequence (each "
+                "activates a different random ~30% of KCs). Between odors, "
+                "activity decays back via APL inhibition. Shows how each "
+                "odor recruits a distinct sparse subset."
+            ),
+        ),
+        build_payload(
+            sub_subgraph,
+            result_3odors,
+            skeleton_provider=conn,
+            dataset_id="mushroom_body",
+            scenario_id="three_odors",
+            scenario_label="Three odors in sequence",
+            description=(
+                "Three pulses (150 ms each, 250 ms apart). Each pulse drives "
+                "a DIFFERENT random 30% of KCs -- think of it as three "
+                "different odors hitting the antennal lobe. APL is intact "
+                "so each odor settles into its own sparse subset, then quiets "
+                "back down between odors. The set of active KCs changes "
+                "between pulses -- that's the MB's odor identity code."
+            ),
+            hyperparams={
+                **common_hp,
+                "n_kc_subset": int(n_kc),
+                "kc_drive_fraction": 0.30,
+                "stimulus": {
+                    "type": "three_odor_pulses",
+                    "pulse_width_s": 0.15,
+                    "amplitude": 0.5,
+                },
+            },
+            stim_fn=stim_3odors,
+            stride=30,
+            min_radius=6.0,
+            n_frames=120,
+        ),
+    )
+
 
 # ---------------- LIF biophysical scenario -----------------------------------
 
@@ -664,6 +810,98 @@ def dti_real_scenarios(mat_path: Path):
             stride=1,
             min_radius=0.0,
             n_frames=80,
+            target_scale=20.0,
+        ),
+    )
+
+    # Region-walk: drive Frontal → Motor → Visual in sequence, watch a wave
+    # of activity sweep across the brain in real time.
+    families = {
+        "Frontal_Sup": np.array(
+            [
+                i
+                for i, nn in enumerate(neurons)
+                if "Frontal" in label_by_id[nn.id] and "Med" not in label_by_id[nn.id]
+            ]
+        ),
+        "Motor": np.array(
+            [
+                i
+                for i, nn in enumerate(neurons)
+                if any(s in label_by_id[nn.id] for s in ("Precentral", "Supp_Motor", "Postcentral"))
+            ]
+        ),
+        "Occipital": np.array(
+            [
+                i
+                for i, nn in enumerate(neurons)
+                if any(s in label_by_id[nn.id] for s in ("Occipital", "Calcarine", "Cuneus"))
+            ]
+        ),
+    }
+    print("  region-walk family sizes: " + ", ".join(f"{k}={len(v)}" for k, v in families.items()))
+
+    def stim_walk(t: float) -> np.ndarray:
+        # 0.0-1.0: Frontal, 1.5-2.5: Motor, 3.0-4.0: Occipital, then quiet.
+        p = np.zeros(n, dtype=np.float64)
+        if t < 1.0:
+            p[families["Frontal_Sup"]] = 0.4
+        elif 1.5 <= t < 2.5:
+            p[families["Motor"]] = 0.4
+        elif 3.0 <= t < 4.0:
+            p[families["Occipital"]] = 0.4
+        return p
+
+    result_walk = simulate(spec, duration=5.0, stimulus=stim_walk, activation=tanh, dt=2e-3)
+    yield (
+        ScenarioSpec(
+            id="region_walk",
+            label="Frontal → Motor → Visual walk",
+            description=(
+                "Sequentially drive Frontal cortex (0-1 s), then primary "
+                "Motor (1.5-2.5 s), then Visual (3-4 s). Lets you watch "
+                "activity spread through the real white-matter network "
+                "as the input target moves around the brain."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_walk,
+            skeleton_provider=conn,
+            spec=spec,
+            dataset_id="dti_hcp",
+            scenario_id="region_walk",
+            scenario_label="Region-walk: Frontal → Motor → Visual",
+            description=(
+                "Five-second walk through three functional families. We drive "
+                "frontal-cortex regions for 1 s, pause, drive motor cortex "
+                "for 1 s, pause, drive visual cortex for 1 s. Activity rides "
+                "the real streamline-count matrix from each driven cluster "
+                "into the rest of the brain. Watch the propagation paths."
+            ),
+            hyperparams={
+                "global_gain": 0.0008,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "tanh",
+                "dt_sim": 2e-3,
+                "tau_default_ms": 100.0,
+                "n_regions": n,
+                "data_source": "neurolib gw/NAP_001 / AAL2 atlas",
+                "stimulus": {
+                    "type": "region_walk",
+                    "phases": [
+                        {"t": [0.0, 1.0], "regions": "Frontal"},
+                        {"t": [1.5, 2.5], "regions": "Motor"},
+                        {"t": [3.0, 4.0], "regions": "Occipital"},
+                    ],
+                    "amplitude": 0.4,
+                },
+            },
+            stim_fn=stim_walk,
+            stride=1,
+            min_radius=0.0,
+            n_frames=120,
             target_scale=20.0,
         ),
     )
