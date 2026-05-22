@@ -2,12 +2,14 @@
   <img src="ico/icon.png" alt="Galvani" width="140">
 </p>
 <h1 align="center">GALVANI</h1>
-
+<p align="center">
+**A connectome to neural dynamics pipeline.**
+</p>
 <p align="center">
   <img src="video/galvani_demo.gif" alt="Galvani web demo" width="720">
 </p>
-
-**A connectome to neural dynamics pipeline.** Galvani takes a subgraph of a published connectome (fly hemibrain, human DTI, H01-style cortical microcircuits) and returns a runnable simulation — rate model, LIF, AdEx, or Hodgkin-Huxley — with biologically reasonable default parameters.
+---
+ Galvani takes a subgraph of a connectome and returns a runnable simulation — rate model, LIF, AdEx, or Hodgkin-Huxley — with biologically reasonable default parameters.
 
 **Live demo:** [marvosyntactical.github.io/galvani](https://marvosyntactical.github.io/galvani)
 
