@@ -2,13 +2,17 @@
   --bg: #0b0f17;
   --fg: #e6edf3;
   --muted: #8b949e;
-  --accent: #58a6ff;
+  /* Match the orange of the GALVANI logo. */
+  --accent: #ff8a3d;
+  --accent-soft: #ff8a3d33;
   --panel: #161b22;
   --border: #30363d;
+  --title-font: "IBM Plex Serif", "Iowan Old Style", "Source Serif Pro", Georgia,
+    serif;
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
     sans-serif;
-  font-size: 13px;
+  font-size: 15px;
   color-scheme: dark;
 }
 
@@ -56,37 +60,60 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Stacking context so popovers anchored inside the sidebar always
+     paint on top of the WebGL canvas (which Firefox can otherwise composite
+     above sibling DOM elements). */
+  position: relative;
+  z-index: 10;
 }
 
 .sidebar h1 {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-family: var(--title-font);
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  /* The trailing letter-spacing leaves visual gap after the last char;
+     pull it back so the badge sits flush. */
+  margin-right: -0.12em;
+}
+
+.sidebar .header-row .logo {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 
 .sidebar .header-row {
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
-  gap: 8px;
+  gap: 0;
+}
+.sidebar .header-row h1 {
+  flex: none;
 }
 
-.sidebar .header-row .badge {
-  font-size: 11px;
+.sidebar h1 .version {
+  font-size: 10px;
+  font-weight: 400;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  letter-spacing: 0;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
-  padding: 2px 6px;
+  opacity: 0.55;
+  margin-left: 10px;
+  vertical-align: baseline;
 }
 
 .selector {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .selector label {
-  font-size: 11px;
+  font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -98,9 +125,19 @@ body {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 0;
   padding: 5px 8px;
   font: inherit;
+}
+
+/* Vertical rhythm of the Menu register's contents. Matches `.selector`'s
+   intra-gap so each label has equal whitespace above and below — i.e. the
+   gap from a previous control's bottom to a label equals the gap from
+   that label to its own control. */
+.controls-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 /* ---- custom dropdown (replaces native <select> to avoid Firefox flicker) */
@@ -118,7 +155,7 @@ body {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 0;
   padding: 6px 10px;
   font: inherit;
   cursor: pointer;
@@ -133,7 +170,7 @@ body {
 }
 .cd-caret {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .cd-menu {
   position: absolute;
@@ -144,7 +181,7 @@ body {
   list-style: none;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 0;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   max-height: 280px;
   overflow-y: auto;
@@ -169,13 +206,6 @@ body {
   background: rgba(88, 166, 255, 0.25);
   font-weight: 600;
 }
-.cd-menu li[aria-selected="true"]::before {
-  content: "✓ ";
-  color: var(--accent);
-}
-.cd-menu li[aria-selected="false"]::before {
-  content: "   ";
-}
 
 /* compact variant for the speed selector in the controls bar */
 .controls .custom-dropdown {
@@ -183,24 +213,42 @@ body {
   min-width: 80px;
 }
 
-.render-toggle {
-  display: inline-flex;
+.render-toggle,
+.btn-toggle {
+  display: flex;
+  width: 100%;
   gap: 2px;
   padding: 2px;
   background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
 }
-.render-toggle button {
+.render-toggle button,
+.btn-toggle button {
+  flex: 1;
   border: none;
   background: transparent;
   color: var(--muted);
   padding: 4px 10px;
-  border-radius: 3px;
+  border-radius: 0;
   cursor: pointer;
   font: inherit;
+  text-align: center;
+  min-width: 0;
 }
-.render-toggle button.active {
+.render-toggle button:disabled,
+.btn-toggle button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.render-toggle button:hover:not(:disabled):not(.active),
+.btn-toggle button:hover:not(:disabled):not(.active) {
+  color: var(--fg);
+}
+.render-toggle button.active,
+.btn-toggle button.active {
   background: var(--accent);
-  color: white;
+  color: #1a0e05;
   font-weight: 600;
 }
 
@@ -215,7 +263,7 @@ body {
   border: 1px dashed var(--border);
   color: var(--muted);
   padding: 6px 10px;
-  border-radius: 4px;
+  border-radius: 0;
   font: inherit;
   cursor: pointer;
   width: 100%;
@@ -228,7 +276,7 @@ body {
 }
 .reset-btn {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .custom-badge {
@@ -239,8 +287,8 @@ body {
   margin-top: 6px;
   padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 11.5px;
+  border-radius: 0;
+  font-size: 13.5px;
   color: var(--fg);
 }
 .custom-badge button {
@@ -248,53 +296,127 @@ body {
   border: none;
   color: var(--muted);
   cursor: pointer;
-  font-size: 16px;
+  font-size: 18px;
   line-height: 1;
 }
 .custom-badge button:hover {
   color: var(--fg);
 }
 
-/* infobox */
+/* --- Register stack ----------------------------------------------------
+   The sidebar's content area below the header is a vertical stack of
+   "registers" — flat full-bleed sections with no rounded corners, sharing
+   horizontal borders. Only one is open at a time; the open one is marked
+   with an accent stripe on its left edge and a slightly elevated header.
+   ---------------------------------------------------------------------- */
+.register-stack {
+  display: flex;
+  flex-direction: column;
+  /* Pull out past the sidebar's 16px horizontal padding so registers
+     extend edge-to-edge of the panel. */
+  margin: 4px -16px 0;
+  border-top: 1px solid var(--border);
+}
 .infobox {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.02);
-  overflow: hidden;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  position: relative;
+}
+.infobox::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: transparent;
+  transition: background 180ms ease;
+  pointer-events: none;
+}
+.infobox.open::before {
+  background: var(--accent);
 }
 .infobox-header {
   width: 100%;
   background: transparent;
   border: none;
-  color: var(--fg);
+  color: var(--muted);
   text-align: left;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 12px;
+  padding: 14px 18px;
   cursor: pointer;
   font: inherit;
+  font-size: 13px;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  transition:
+    color 140ms ease,
+    background 140ms ease;
 }
 .infobox-header:hover {
-  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.025);
 }
 .infobox.open .infobox-header {
-  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.04);
 }
-.infobox-header .caret {
-  width: 12px;
-  text-align: center;
+.infobox-marker {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  background: var(--muted);
+  transition: background 140ms ease;
+}
+.infobox.open .infobox-marker {
+  background: var(--accent);
+}
+.infobox-title {
+  flex: 1;
+}
+.infobox-chevron {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 16px;
+  line-height: 1;
   color: var(--muted);
+  transition: color 140ms ease;
+}
+.infobox.open .infobox-chevron {
+  color: var(--accent);
+}
+/* Smooth open/close via the grid-template-rows 0fr → 1fr trick.
+   The collapse div is a single-row grid; the row interpolates between
+   0 (closed) and the body's natural height (open). The body has min-height:0
+   so the grid row can actually collapse to zero — without this CSS grid
+   would refuse to shrink the row below content size. */
+.infobox-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.infobox.open .infobox-collapse {
+  grid-template-rows: 1fr;
 }
 .infobox-body {
-  padding: 10px 12px 14px 30px;
-  font-size: 12.5px;
+  min-height: 0;
+  max-height: 55vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 0 18px;
+  font-size: 14.5px;
   line-height: 1.5;
   color: #c9d1d9;
-  max-height: 50vh;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* Padding-top/bottom collapse together with the row, so when the
+     register is closed the body contributes zero visible height. */
+  transition: padding 240ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.infobox.open .infobox-body {
+  padding: 12px 18px 16px;
 }
 .infobox-body p {
   margin: 6px 0;
@@ -312,7 +434,7 @@ body {
   column-gap: 12px;
   row-gap: 3px;
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 11.5px;
+  font-size: 13.5px;
 }
 .infobox-body .kv .k {
   color: var(--muted);
@@ -330,7 +452,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 2px 0;
-  font-size: 12px;
+  font-size: 14px;
 }
 .infobox-body ul.legend-list li .swatch {
   width: 14px;
@@ -342,7 +464,7 @@ body {
 
 /* sanity panel */
 .sanity {
-  font-size: 11.5px;
+  font-size: 13.5px;
   color: var(--muted);
   border-top: 1px dashed var(--border);
   padding-top: 8px;
@@ -372,13 +494,13 @@ body {
 }
 .canvas-host .overlay h2 {
   margin: 0 0 4px;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
 }
 .canvas-host .overlay .subtitle {
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 /* tooltip */
@@ -389,7 +511,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 10px;
-  font-size: 11.5px;
+  font-size: 13.5px;
   line-height: 1.4;
   z-index: 10;
   min-width: 160px;
@@ -403,7 +525,11 @@ body {
   color: var(--muted);
 }
 
-/* controls (bottom row, only across canvas column) */
+/* controls (bottom row, only across canvas column).
+   Auto-hides: only visible when the user moves the mouse near the
+   bottom of the viewport (or hovers the bar itself). Animates in/out
+   with a translate so the canvas claims the full vertical space when
+   the bar is hidden. */
 .controls {
   grid-column: 1;
   grid-row: 2;
@@ -411,8 +537,51 @@ body {
   align-items: center;
   gap: 16px;
   padding: 12px 20px;
-  background: var(--panel);
+  background: rgba(22, 27, 34, 0.92);
+  backdrop-filter: blur(6px);
   border-top: 1px solid var(--border);
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 360px;  /* leave the sidebar exposed on the right */
+  z-index: 15;
+  transform: translateY(0);
+  opacity: 1;
+  transition:
+    transform 200ms ease-out,
+    opacity 200ms ease-out;
+}
+.controls.hidden {
+  transform: translateY(110%);
+  opacity: 0;
+  pointer-events: none;
+}
+.controls.visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+/* When the single-neuron drawer is open on the left, shrink the controls
+   bar horizontally so it doesn't slide underneath the drawer. */
+.controls.snv-open {
+  left: 360px;
+  transition:
+    left 240ms cubic-bezier(0.4, 0, 0.2, 1),
+    transform 200ms ease-out,
+    opacity 200ms ease-out;
+}
+.controls {
+  transition:
+    left 240ms cubic-bezier(0.4, 0, 0.2, 1),
+    transform 200ms ease-out,
+    opacity 200ms ease-out;
+}
+@media (max-width: 720px) {
+  .controls {
+    right: 0;
+  }
+  .controls.snv-open {
+    left: 0;
+  }
 }
 .controls .play-btn {
   background: var(--accent);
@@ -449,7 +618,7 @@ body {
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 14px;
+  font-size: 16px;
   color: var(--muted);
 }
 
@@ -462,34 +631,80 @@ body {
   place-items: center;
   background: rgba(11, 15, 23, 0.85);
   color: var(--muted);
-  font-size: 14px;
+  font-size: 16px;
   z-index: 5;
 }
 
-/* --- Detail mode sidebar --- */
+/* --- Detail drawer (slides in from the left when a neuron is clicked) --- */
+.detail-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 360px;
+  max-width: 100vw;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 44px 16px 16px;
+  z-index: 25;
+  transform: translateX(-100%);
+  transition: transform 240ms cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
+  /* Orange scrollbar to match the rest of the accent UI. */
+  scrollbar-color: var(--accent) transparent; /* Firefox */
+  scrollbar-width: thin;
+}
+.detail-drawer::-webkit-scrollbar {
+  width: 8px;
+}
+.detail-drawer::-webkit-scrollbar-track {
+  background: transparent;
+}
+.detail-drawer::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 0;
+}
+.detail-drawer::-webkit-scrollbar-thumb:hover {
+  background: #ffa566;
+}
+.detail-drawer.open {
+  transform: translateX(0);
+}
 .detail-sidebar {
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
-.detail-sidebar .back-btn {
+/* Bold orange left-pointing triangle pinned to the drawer's top-right.
+   Uses the unicode ◀ glyph; nudges left and brightens on hover. */
+.detail-sidebar .drawer-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
   background: transparent;
-  border: 1px solid var(--border);
-  color: var(--fg);
-  padding: 6px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-  width: fit-content;
-}
-.detail-sidebar .back-btn:hover {
-  border-color: var(--accent);
+  border: none;
   color: var(--accent);
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    transform 120ms ease;
+}
+.detail-sidebar .drawer-close:hover {
+  color: #ffc28a;
+  transform: translateX(-2px);
+}
+.detail-sidebar .drawer-close:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
 }
 .detail-header h2 {
   margin: 0 0 6px;
-  font-size: 18px;
+  font-size: 20px;
 }
 .detail-section {
   border-top: 1px solid var(--border);
@@ -497,7 +712,7 @@ body {
 }
 .detail-section h3 {
   margin: 0 0 6px;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -505,7 +720,7 @@ body {
 }
 .detail-section p {
   margin: 6px 0;
-  font-size: 12.5px;
+  font-size: 14.5px;
   line-height: 1.5;
 }
 
@@ -516,7 +731,7 @@ body {
   column-gap: 16px;
   row-gap: 6px;
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 12px;
+  font-size: 14px;
   margin: 4px 0;
   padding: 8px 10px;
   background: rgba(255, 255, 255, 0.03);
@@ -533,7 +748,7 @@ body {
 .params-table .group-header {
   grid-column: span 2;
   color: var(--accent);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -545,44 +760,55 @@ body {
   margin-top: 0;
 }
 
-/* Top-of-detail-panel "Show neighbors" control */
-.neighbors-control {
-  background: rgba(88, 166, 255, 0.06);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
-}
-.neighbors-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-}
-.neighbors-toggle input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-.neighbors-k {
+/* Toggle switch (used by the SNV neighbors control).
+   Built from a styled `input[type=checkbox]` via appearance:none. */
+.toggle-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
 }
-.neighbors-k .k-label {
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
+.toggle-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 36px;
+  height: 18px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease;
+}
+.toggle-switch::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  background: var(--muted);
+  transition:
+    transform 160ms cubic-bezier(0.4, 0, 0.2, 1),
+    background 140ms ease;
+}
+.toggle-switch:checked {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.toggle-switch:checked::before {
+  transform: translateX(18px);
+  background: var(--accent);
+}
+.toggle-switch:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.toggle-status {
+  font-size: 13.5px;
   color: var(--muted);
-  min-width: 70px;
-}
-.neighbors-k input[type="range"] {
-  flex: 1;
-  accent-color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, monospace;
 }
 .stim-badge {
   display: inline-block;
@@ -592,7 +818,7 @@ body {
   color: #ff5cb0;
   border: 1px solid #ff5cb0;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -610,7 +836,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 14px;
   cursor: pointer;
 }
 .connected-controls input[type="range"] {
@@ -619,7 +845,7 @@ body {
 }
 .connected-controls .k-label {
   font-family: ui-monospace, monospace;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--muted);
   min-width: 50px;
 }
@@ -627,7 +853,7 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px 12px;
-  font-size: 11px;
+  font-size: 13px;
   margin-top: 6px;
 }
 .connected-legend .row {
@@ -660,13 +886,13 @@ pre.model-eq {
   padding: 8px 10px;
   border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 11.5px;
+  font-size: 13.5px;
   overflow-x: auto;
   margin: 6px 0;
   white-space: pre-wrap;
 }
 .legend-mini {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--muted);
   margin-top: 4px;
 }
@@ -688,7 +914,7 @@ pre.model-eq {
   list-style: none;
   padding: 0;
   margin: 4px 0;
-  font-size: 11.5px;
+  font-size: 13.5px;
 }
 .conn-list li {
   padding: 2px 0;
@@ -738,7 +964,7 @@ pre.model-eq {
     background: var(--panel);
     color: var(--fg);
     border: 1px solid var(--border);
-    font-size: 18px;
+    font-size: 20px;
     cursor: pointer;
   }
   .canvas-host {
@@ -763,7 +989,7 @@ pre.model-eq {
   background: var(--bg);
   color: var(--muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1;
   padding: 0;
 }
@@ -775,13 +1001,29 @@ pre.model-eq {
   position: absolute;
   right: 0;
   top: 26px;
-  z-index: 50;
+  z-index: 9999;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0;
   width: 320px;
+  /* Reset all inherited text transformations so popover bodies render
+     normally even when triggered from a section label that's uppercased. */
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: normal;
+  font-size: 14px;
+  color: var(--fg);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.help-panel * {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.help-panel-portal {
+  position: fixed !important;
+  right: auto;
+  z-index: 99999;
 }
 .help-panel-header {
   display: flex;
@@ -789,14 +1031,14 @@ pre.model-eq {
   align-items: center;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 14px;
 }
 .help-close {
   background: transparent;
   border: none;
   color: var(--muted);
   cursor: pointer;
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1;
 }
 .help-close:hover {
@@ -804,7 +1046,7 @@ pre.model-eq {
 }
 .help-panel-body {
   padding: 10px 14px;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.5;
   color: #c9d1d9;
   max-height: 50vh;
@@ -818,4 +1060,72 @@ pre.model-eq {
   padding: 1px 5px;
   border-radius: 3px;
   font-family: ui-monospace, monospace;
+}
+
+/* --- Loading spinner ---------------------------------------------------
+   Used during initial manifest + first-payload load. Sits over a panel
+   matching the sim background so the page never flashes white. */
+.loading-fullscreen {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+}
+.spinner {
+  width: 56px;
+  height: 56px;
+  border: 4px solid rgba(255, 138, 61, 0.18);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+}
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- Shortcuts list inside the Shortcuts register --- */
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.shortcut-row kbd {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11.5px;
+  padding: 3px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  color: var(--fg);
+  text-align: center;
+  min-width: 44px;
+}
+
+/* --- FPS / memory stats overlay -----------------------------------------
+   The drei <Stats> panel attaches its DOM element to whatever node we
+   point its `parent` ref at. We host it here so we can scale the panel
+   2× via CSS without monkey-patching stats.js's inline styles. */
+.stats-host {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 20;
+  transform: scale(2);
+  transform-origin: top left;
+  pointer-events: none;
+}
+.stats-host > * {
+  pointer-events: auto;
 }

@@ -24,6 +24,9 @@ interface Props {
   onHover?: (info: HoverInfo | null) => void;
   hoveredIndex?: number | null;
   onSelect?: (neuronIndex: number) => void;
+  /** Browser-side Gaussian noise added to each neuron's rate per frame.
+   *  0 = deterministic, 0.3 = noticeable jitter. */
+  stochasticity?: number;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -42,13 +45,23 @@ const UNIT_CYLINDER = new THREE.CylinderGeometry(1, 1, 1, 6, 1, false);
 UNIT_CYLINDER.translate(0, 0.5, 0); // base at origin, tip at +Y
 const _Y = new THREE.Vector3(0, 1, 0);
 
+// Module-level scratch vectors so the per-segment matrix build doesn't
+// allocate. The old code did `new Vector3()` per segment which created
+// thousands of GC-tracked objects on each mode switch.
+const _SCRATCH = {
+  dir: new THREE.Vector3(),
+  q: new THREE.Quaternion(),
+  scale: new THREE.Vector3(),
+};
+
 function segmentMatrix(
   p0: THREE.Vector3,
   p1: THREE.Vector3,
   radius: number,
   out: THREE.Matrix4,
 ): THREE.Matrix4 {
-  const dir = new THREE.Vector3().subVectors(p1, p0);
+  const { dir, q, scale } = _SCRATCH;
+  dir.subVectors(p1, p0);
   const len = dir.length();
   if (len < 1e-9) {
     out.makeScale(0, 0, 0);
@@ -56,22 +69,22 @@ function segmentMatrix(
     return out;
   }
   dir.divideScalar(len);
-  const q = new THREE.Quaternion().setFromUnitVectors(_Y, dir);
-  out.compose(p0, q, new THREE.Vector3(radius, len, radius));
+  q.setFromUnitVectors(_Y, dir);
+  scale.set(radius, len, radius);
+  out.compose(p0, q, scale);
   return out;
 }
 
 /* ------------------------------------------------------------------------ */
-/* per-neuron components                                                     */
+/* per-neuron Line component (renderMode === "lines")                        */
 /* ------------------------------------------------------------------------ */
 
-type ColorBearer = { material: unknown } | null;
+type LineColorBearer = { material: unknown } | null;
 
-interface NeuronProps {
+interface NeuronLineProps {
   neuron: PayloadNeuron;
   index: number;
-  baseColor: THREE.Color;
-  registerRef: (i: number, obj: ColorBearer) => void;
+  registerRef: (i: number, obj: LineColorBearer) => void;
   lineWidth: number;
   onPointerOver?: (e: { clientX: number; clientY: number }) => void;
   onPointerOut?: () => void;
@@ -88,7 +101,7 @@ function NeuronLine({
   onPointerOut,
   onClick,
   isHovered,
-}: NeuronProps) {
+}: NeuronLineProps) {
   const points = useMemo(() => pointsFromFlat(neuron.segments), [neuron.segments]);
   return (
     <Line
@@ -108,73 +121,194 @@ function NeuronLine({
         onClick?.();
       }}
       ref={(el) => {
-        registerRef(index, el ? (el as unknown as ColorBearer) : null);
+        registerRef(index, el ? (el as unknown as LineColorBearer) : null);
       }}
     />
   );
 }
 
-function NeuronTubes({
-  neuron,
-  index,
-  baseColor,
-  registerRef,
-  onPointerOver,
-  onPointerOut,
-  onClick,
-  isHovered,
-}: NeuronProps) {
-  const ref = useRef<THREE.InstancedMesh>(null);
-  const nSegments = neuron.segments.length / 6;
+/* ------------------------------------------------------------------------ */
+/* TubesView -- ONE InstancedMesh for the whole scene                        */
+/* Why: one mesh per neuron used to mount hundreds of InstancedMeshes        */
+/* whenever the user flipped to "tubes", which froze the page for >1 s.      */
+/* A single mesh is one draw call, one material compile, and one matrix      */
+/* allocation pass.                                                          */
+/* ------------------------------------------------------------------------ */
 
-  // Precompute instance matrices.
+interface TubesViewProps {
+  payload: Payload;
+  frameRef: { current: number };
+  baseColors: THREE.Color[];
+  maxRate: number;
+  maxStim: number;
+  stochasticity: number;
+  hoveredIndex: number | null;
+  onHover?: (info: HoverInfo | null) => void;
+  onSelect?: (i: number) => void;
+}
+
+function TubesView({
+  payload,
+  frameRef,
+  baseColors,
+  maxRate,
+  maxStim,
+  stochasticity,
+  hoveredIndex,
+  onHover,
+  onSelect,
+}: TubesViewProps) {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const tmpColor = useMemo(() => new THREE.Color(), []);
+
+  // Per-payload lookup tables: which instance range belongs to which neuron,
+  // and the reverse lookup so a pointer event's `instanceId` -> neuron index.
+  const { totalSegments, neuronOffsets, neuronCounts, neuronByInstance } =
+    useMemo(() => {
+      const N = payload.neurons.length;
+      const offsets = new Int32Array(N);
+      const counts = new Int32Array(N);
+      let total = 0;
+      for (let i = 0; i < N; i++) {
+        const c = (payload.neurons[i].segments.length / 6) | 0;
+        offsets[i] = total;
+        counts[i] = c;
+        total += c;
+      }
+      const lookup = new Int32Array(total);
+      for (let i = 0; i < N; i++) {
+        const off = offsets[i];
+        const cnt = counts[i];
+        for (let s = 0; s < cnt; s++) lookup[off + s] = i;
+      }
+      return {
+        totalSegments: total,
+        neuronOffsets: offsets,
+        neuronCounts: counts,
+        neuronByInstance: lookup,
+      };
+    }, [payload]);
+
+  // One-shot: write instance matrices + initial base colors.
   useEffect(() => {
-    const mesh = ref.current;
+    const mesh = meshRef.current;
     if (!mesh) return;
     const mat = new THREE.Matrix4();
     const p0 = new THREE.Vector3();
     const p1 = new THREE.Vector3();
-    const segs = neuron.segments;
-    const radii = neuron.radii;
-    for (let s = 0; s < nSegments; s++) {
-      const base = s * 6;
-      p0.set(segs[base + 0], segs[base + 1], segs[base + 2]);
-      p1.set(segs[base + 3], segs[base + 4], segs[base + 5]);
-      const r = Math.max(0.005, radii[s] ?? 0.02);
-      segmentMatrix(p0, p1, r, mat);
-      mesh.setMatrixAt(s, mat);
+    let idx = 0;
+    for (let i = 0; i < payload.neurons.length; i++) {
+      const n = payload.neurons[i];
+      const segs = n.segments;
+      const radii = n.radii;
+      const count = neuronCounts[i];
+      for (let s = 0; s < count; s++) {
+        const base = s * 6;
+        p0.set(segs[base], segs[base + 1], segs[base + 2]);
+        p1.set(segs[base + 3], segs[base + 4], segs[base + 5]);
+        const r = Math.max(0.005, radii[s] ?? 0.02);
+        segmentMatrix(p0, p1, r, mat);
+        mesh.setMatrixAt(idx, mat);
+        idx++;
+      }
     }
     mesh.instanceMatrix.needsUpdate = true;
-  }, [neuron.segments, neuron.radii, nSegments]);
-
-  useEffect(() => {
-    if (ref.current) {
-      registerRef(index, ref.current);
+    // Seed instance colors so the InstancedBufferAttribute exists; useFrame
+    // overwrites them every frame.
+    for (let i = 0; i < payload.neurons.length; i++) {
+      const off = neuronOffsets[i];
+      const cnt = neuronCounts[i];
+      for (let s = 0; s < cnt; s++) {
+        mesh.setColorAt(off + s, baseColors[i]);
+      }
     }
-    return () => registerRef(index, null);
-  }, [index, registerRef]);
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [payload, neuronCounts, neuronOffsets, baseColors]);
 
+  // Per-frame color update. Writes directly into the InstancedBufferAttribute
+  // backing array so we never allocate or call setColorAt 5 000+ times per
+  // frame (which was significant per-frame GC pressure).
+  useFrame(() => {
+    const mesh = meshRef.current;
+    if (!mesh || !mesh.instanceColor) return;
+    const f = frameRef.current;
+    const t = Math.max(
+      0,
+      Math.min(payload.metadata.n_frames - 1, Math.round(Number.isFinite(f) ? f : 0)),
+    );
+    const row = payload.rates[t];
+    const stimRow = payload.stim_signal?.[t];
+    const buf = mesh.instanceColor.array as Float32Array;
+
+    for (let i = 0; i < payload.neurons.length; i++) {
+      let v = row[i] / maxRate;
+      if (stochasticity > 0) {
+        const u = Math.max(1e-6, Math.random());
+        const g = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+        v = Math.max(0, Math.min(1.2, v + stochasticity * g * 0.4));
+      }
+      activityColor(v, baseColors[i], tmpColor);
+      if (stimRow) {
+        const inputLevel = stimRow[i] / maxStim;
+        if (inputLevel > 0.05) blendInput(tmpColor, inputLevel, tmpColor);
+      }
+      if (i === hoveredIndex) {
+        // Boost hovered neuron without going off-gamut.
+        tmpColor.r = Math.min(1, tmpColor.r * 1.6 + 0.1);
+        tmpColor.g = Math.min(1, tmpColor.g * 1.6 + 0.1);
+        tmpColor.b = Math.min(1, tmpColor.b * 1.6 + 0.1);
+      }
+      const off = neuronOffsets[i];
+      const cnt = neuronCounts[i];
+      const r = tmpColor.r;
+      const g = tmpColor.g;
+      const b = tmpColor.b;
+      for (let s = 0; s < cnt; s++) {
+        const o = (off + s) * 3;
+        buf[o] = r;
+        buf[o + 1] = g;
+        buf[o + 2] = b;
+      }
+    }
+    mesh.instanceColor.needsUpdate = true;
+  });
+
+  // Pointer events: instancedmesh exposes instanceId; map to neuron via the
+  // precomputed lookup. We translate pointerMove to "hover" (single
+  // continuous handler) and pointerOut to "unhover".
   return (
     <instancedMesh
-      ref={ref}
-      args={[UNIT_CYLINDER, undefined, nSegments]}
-      onPointerOver={(e) => {
+      ref={meshRef}
+      args={[UNIT_CYLINDER, undefined, totalSegments]}
+      onPointerMove={(e) => {
+        const inst = e.instanceId;
+        if (inst === undefined) return;
         e.stopPropagation();
-        onPointerOver?.({ clientX: e.clientX, clientY: e.clientY });
+        const i = neuronByInstance[inst];
+        const f = frameRef.current;
+        const t = Math.max(
+          0,
+          Math.min(
+            payload.metadata.n_frames - 1,
+            Math.round(Number.isFinite(f) ? f : 0),
+          ),
+        );
+        onHover?.({
+          neuronIndex: i,
+          rate: payload.rates[t][i],
+          screen: { x: e.clientX, y: e.clientY },
+        });
       }}
-      onPointerOut={onPointerOut}
+      onPointerOut={() => onHover?.(null)}
       onClick={(e) => {
+        const inst = e.instanceId;
+        if (inst === undefined) return;
         e.stopPropagation();
-        onClick?.();
+        const i = neuronByInstance[inst];
+        onSelect?.(i);
       }}
     >
-      <meshStandardMaterial
-        color={baseColor}
-        roughness={0.6}
-        metalness={0.05}
-        emissive={isHovered ? baseColor : new THREE.Color(0, 0, 0)}
-        emissiveIntensity={isHovered ? 0.4 : 0.0}
-      />
+      <meshStandardMaterial roughness={0.55} metalness={0.05} />
     </instancedMesh>
   );
 }
@@ -191,8 +325,9 @@ export function RingScene({
   onHover,
   hoveredIndex,
   onSelect,
+  stochasticity = 0,
 }: Props) {
-  const refs = useRef<Array<ColorBearer>>([]);
+  const lineRefs = useRef<Array<LineColorBearer>>([]);
   const tmp = useMemo(() => new THREE.Color(), []);
   const { size } = useThree();
 
@@ -214,10 +349,10 @@ export function RingScene({
     return mx > 0 ? mx : 1;
   }, [payload]);
 
-  // Keep Line2 resolution in sync with the canvas.
+  // Keep Line2 resolution in sync with the canvas (lines mode only).
   useEffect(() => {
     if (renderMode !== "lines") return;
-    for (const obj of refs.current) {
+    for (const obj of lineRefs.current) {
       if (!obj) continue;
       const mat = (obj as unknown as { material?: { resolution?: THREE.Vector2 } }).material;
       if (mat && "resolution" in mat && mat.resolution) {
@@ -226,7 +361,10 @@ export function RingScene({
     }
   }, [size.width, size.height, payload, renderMode]);
 
+  // Lines-mode per-frame color update (unchanged from before -- the
+  // per-neuron <Line> components are cheap to mount).
   useFrame(() => {
+    if (renderMode !== "lines") return;
     const f = frameRef.current;
     const t = Math.max(
       0,
@@ -234,10 +372,15 @@ export function RingScene({
     );
     const row = payload.rates[t];
     const stimRow = payload.stim_signal?.[t];
-    for (let i = 0; i < refs.current.length; i++) {
-      const obj = refs.current[i];
+    for (let i = 0; i < lineRefs.current.length; i++) {
+      const obj = lineRefs.current[i];
       if (!obj) continue;
-      const v = row[i] / maxRate;
+      let v = row[i] / maxRate;
+      if (stochasticity > 0) {
+        const u = Math.max(1e-6, Math.random());
+        const g = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+        v = Math.max(0, Math.min(1.2, v + stochasticity * g * 0.4));
+      }
       activityColor(v, baseColors[i], tmp);
       if (stimRow) {
         const inputLevel = stimRow[i] / maxStim;
@@ -250,8 +393,8 @@ export function RingScene({
     }
   });
 
-  const registerRef = (i: number, obj: typeof refs.current[number]) => {
-    refs.current[i] = obj;
+  const registerLineRef = (i: number, obj: LineColorBearer) => {
+    lineRefs.current[i] = obj;
   };
 
   const handlePointerOver = (i: number) => (e: { clientX: number; clientY: number }) => {
@@ -280,8 +423,6 @@ export function RingScene({
     const gain = model.global_gain;
     const points: number[] = [];
     const N = payload.neurons.length;
-    // Only draw edges above a magnitude threshold so the scene isn't a
-    // hairball. Use the top-quartile weight as the threshold.
     const flat: number[] = [];
     for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
       const w = Math.abs(W[i][j]) * gain;
@@ -303,8 +444,15 @@ export function RingScene({
     return new Float32Array(points);
   }, [payload, isDTI]);
 
+  // DTI: rotate the whole brain so MNI's superior axis (z) becomes
+  // world up (y), and MNI's anterior axis (y) becomes world -z (toward
+  // the viewer / screen-left).
+  const groupRotation: [number, number, number] = isDTI
+    ? [-Math.PI / 2, 0, Math.PI / 2]
+    : [0, 0, 0];
+
   return (
-    <group>
+    <group rotation={groupRotation}>
       {dtiEdges && dtiEdges.length > 0 && (
         <lineSegments>
           <bufferGeometry>
@@ -323,24 +471,33 @@ export function RingScene({
           />
         </lineSegments>
       )}
-      {payload.neurons.map((n, i) => {
-        const common = {
-          neuron: n,
-          index: i,
-          baseColor: baseColors[i],
-          registerRef,
-          lineWidth,
-          onPointerOver: handlePointerOver(i),
-          onPointerOut: handlePointerOut,
-          onClick: onSelect ? () => onSelect(i) : undefined,
-          isHovered: hoveredIndex === i,
-        };
-        return renderMode === "lines" ? (
-          <NeuronLine key={`l-${n.id}`} {...common} />
-        ) : (
-          <NeuronTubes key={`t-${n.id}`} {...common} />
-        );
-      })}
+      {renderMode === "lines"
+        ? payload.neurons.map((n, i) => (
+            <NeuronLine
+              key={`l-${n.id}`}
+              neuron={n}
+              index={i}
+              registerRef={registerLineRef}
+              lineWidth={lineWidth}
+              onPointerOver={handlePointerOver(i)}
+              onPointerOut={handlePointerOut}
+              onClick={onSelect ? () => onSelect(i) : undefined}
+              isHovered={hoveredIndex === i}
+            />
+          ))
+        : (
+          <TubesView
+            payload={payload}
+            frameRef={frameRef}
+            baseColors={baseColors}
+            maxRate={maxRate}
+            maxStim={maxStim}
+            stochasticity={stochasticity}
+            hoveredIndex={hoveredIndex ?? null}
+            onHover={onHover}
+            onSelect={onSelect}
+          />
+        )}
     </group>
   );
 }

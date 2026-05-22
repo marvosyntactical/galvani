@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Stats } from "@react-three/drei";
 import type {
@@ -8,7 +8,7 @@ import type {
   ManifestScenario,
   Payload,
 } from "./payload";
-import { loadManifest, loadPayload } from "./payload";
+import { loadManifest, loadPayload, MODEL_LABELS, type ModelId } from "./payload";
 import { CELL_TYPE_INFO } from "./cellTypes";
 import { Infobox } from "./Infobox";
 import { RingScene, type HoverInfo, type RenderMode } from "./RingScene";
@@ -42,6 +42,11 @@ export default function App() {
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1.0);
   const [renderMode, setRenderMode] = useState<RenderMode>("lines");
+  const [modelId, setModelId] = useState<ModelId>("rate");
+  /** Stochasticity level. Currently 0 only (baked); higher values add
+   *  in-browser Gaussian jitter on top of the baked rates for visual
+   *  effect. */
+  const [stochasticity, setStochasticity] = useState<number>(0);
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [gainOverride, setGainOverride] = useState<number | null>(null);
   const [resimBusy, setResimBusy] = useState(false);
@@ -60,6 +65,28 @@ export default function App() {
   const [companionsLoading, setCompanionsLoading] = useState(false);
   // Mobile: collapse the sidebar by default and let a hamburger toggle it.
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Single-open accordion: which infobox is currently expanded.
+  const [openCard, setOpenCard] = useState<string | null>("overview");
+  // Snapshot of the neuron-detail index that lags `selectedNeuronIndex` by
+  // one frame during the close animation. Without it the drawer's content
+  // would blank out the instant the user clicks the back arrow, making the
+  // slide-out look broken. Cleared 260 ms after selection becomes null.
+  const [drawerIndex, setDrawerIndex] = useState<number | null>(null);
+  // Most-recently-opened neuron, kept across close so the `S` shortcut can
+  // toggle the drawer back open without re-clicking. Survives close.
+  const lastSelectedRef = useRef<number | null>(null);
+  // Hidden <input> inside UploadButton; we hold the ref here so the `J`
+  // keyboard shortcut can click() it from anywhere.
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  // FPS/memory stats panel — hidden by default, toggled with F. Hosting it
+  // in our own div lets us scale it 2× via CSS without monkey-patching
+  // stats.js's inline styles.
+  const [statsVisible, setStatsVisible] = useState(false);
+  const statsHostRef = useRef<HTMLDivElement>(null);
+  // Auto-hide bottom controls bar: show when mouse is near the bottom of
+  // the canvas area or while the user is actively dragging the scrubber.
+  const [controlsVisible, setControlsVisible] = useState(false);
+  const controlsHoldRef = useRef(false);
 
   const rafRef = useRef<number | null>(null);
   const lastTickRef = useRef<number>(performance.now());
@@ -102,11 +129,21 @@ export default function App() {
       return;
     }
     if (!scenario) return;
+    // Look up the file matching the selected model. Fall back to legacy
+    // `file` field if the manifest is v2 (pre-Model-dropdown).
+    const file =
+      scenario.models?.[modelId] ??
+      scenario.models?.["rate"] ??
+      scenario.file;
+    if (!file) {
+      setErr(`Scenario ${scenario.id} has no file for model ${modelId}`);
+      return;
+    }
     setPayloadLoading(true);
     setHover(null);
     setGainOverride(null);
     let cancelled = false;
-    loadPayload(scenario.file)
+    loadPayload(file)
       .then((p) => {
         if (cancelled) return;
         setPayload(p);
@@ -123,7 +160,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [scenario, customPayload]);
+  }, [scenario, customPayload, modelId]);
 
   // Live re-simulation when the user drags the gain slider.
   useEffect(() => {
@@ -182,11 +219,96 @@ export default function App() {
     return () => clearInterval(id);
   }, [payload]);
 
+  // Global keyboard shortcuts. Skipped while focus is in a form field.
+  //   Space — play/pause
+  //   T     — toggle Linear/Tubular render mode
+  //   Esc   — close the SNV drawer (if open)
+  //   N     — toggle Show neighbors (only meaningful while SNV is open)
+  //   S     — toggle the last-selected neuron's drawer (open or close)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
+      switch (e.code) {
+        case "Space":
+          e.preventDefault();
+          setPlaying((p) => !p);
+          return;
+        case "KeyT":
+          e.preventDefault();
+          setRenderMode((m) => (m === "lines" ? "tubes" : "lines"));
+          return;
+        case "Escape":
+          if (selectedNeuronIndex !== null) {
+            e.preventDefault();
+            setSelectedNeuronIndex(null);
+          }
+          return;
+        case "KeyN":
+          if (selectedNeuronIndex !== null) {
+            e.preventDefault();
+            setShowConnected((s) => !s);
+          }
+          return;
+        case "KeyS":
+          e.preventDefault();
+          if (selectedNeuronIndex !== null) {
+            setSelectedNeuronIndex(null);
+          } else if (lastSelectedRef.current !== null) {
+            setSelectedNeuronIndex(lastSelectedRef.current);
+          }
+          return;
+        case "KeyJ":
+          e.preventDefault();
+          uploadInputRef.current?.click();
+          return;
+        case "KeyF":
+          e.preventDefault();
+          setStatsVisible((s) => !s);
+          return;
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedNeuronIndex]);
+
+  // Mirror selection into the persistent ref so the `S` shortcut can re-open
+  // the last-viewed neuron after Esc.
+  useEffect(() => {
+    if (selectedNeuronIndex !== null) {
+      lastSelectedRef.current = selectedNeuronIndex;
+    }
+  }, [selectedNeuronIndex]);
+
+  // Auto-hide controls bar: visible when mouse is within ~120 px of the
+  // canvas bottom, or while the user is actively interacting with the bar.
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (controlsHoldRef.current) return;
+      const nearBottom = window.innerHeight - e.clientY < 120;
+      setControlsVisible(nearBottom);
+    }
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, []);
+
   // Reset connected-neurons state whenever the user enters detail mode or
   // changes the focused neuron.
   useEffect(() => {
     setCompanions([]);
     setShowConnected(false);
+  }, [selectedNeuronIndex]);
+
+  // Mirror `selectedNeuronIndex` into `drawerIndex` so the drawer's content
+  // stays painted through the slide-out transition.
+  useEffect(() => {
+    if (selectedNeuronIndex !== null) {
+      setDrawerIndex(selectedNeuronIndex);
+      return;
+    }
+    const handle = window.setTimeout(() => setDrawerIndex(null), 260);
+    return () => window.clearTimeout(handle);
   }, [selectedNeuronIndex]);
 
   // Fetch top-k incoming/outgoing companion details when the toggle is on.
@@ -291,7 +413,13 @@ export default function App() {
   }, [selectedNeuronIndex, payload]);
 
   if (err) return <div className="loading">Error: {err}</div>;
-  if (!manifest || !dataset) return <div className="loading">Loading manifest…</div>;
+  if (!manifest || !dataset) {
+    return (
+      <div className="loading-fullscreen">
+        <div className="spinner" />
+      </div>
+    );
+  }
 
   // UI-facing frame (already throttled to 10 Hz via displayFrame).
   const safeFrame = Number.isFinite(displayFrame) ? displayFrame : 0;
@@ -329,12 +457,13 @@ export default function App() {
       <div className="canvas-host">
         {payload && (
           <Canvas
-            // DTI brain looks best from the side (sagittal-like view).
-            // The HD ring / MB look best from the default upper-front angle.
+            // DTI brain looks best from a sagittal-like view (looking from
+            // the brain's right side). The HD ring / MB look best from the
+            // default upper-front angle.
             key={`canvas-${payload.metadata.dataset_id}`}
             camera={
               payload.metadata.dataset_id.startsWith("dti")
-                ? { position: [40, 8, 0], fov: 35, near: 0.1, far: 500 }
+                ? { position: [30, 0, 0], fov: 35, near: 0.1, far: 500 }
                 : { position: [12, 8, 12], fov: 50, near: 0.1, far: 200 }
             }
             dpr={[1, 2]}
@@ -360,9 +489,7 @@ export default function App() {
                 renderMode={renderMode}
                 onHover={setHover}
                 hoveredIndex={hover?.neuronIndex ?? null}
-                // DTI parcels don't have real per-neuron morphology, so
-                // there's nothing to drill into. Only enable click for
-                // single-cell datasets.
+                stochasticity={stochasticity}
                 onSelect={
                   payload.metadata.dataset_id.startsWith("dti")
                     ? undefined
@@ -372,21 +499,13 @@ export default function App() {
             )}
           </Canvas>
         )}
-        {payload && !inDetailMode && <Stats />}
-        {payload && !inDetailMode && (
-          <div className="overlay">
-            <h2>{scenario?.label}</h2>
-            <p className="subtitle">
-              {payload.metadata.n_neurons} neurons ·{" "}
-              {payload.metadata.duration.toFixed(2)}s · dt ={" "}
-              {payload.metadata.dt_sim.toExponential(1)} s
-            </p>
-            {!payload.metadata.dataset_id.startsWith("dti") && (
-              <p className="subtitle" style={{ marginTop: 6 }}>
-                💡 Click a neuron to see its morphology + model up close
-              </p>
-            )}
-          </div>
+        <div
+          ref={statsHostRef}
+          className="stats-host"
+          style={{ display: statsVisible ? "block" : "none" }}
+        />
+        {payload && !inDetailMode && statsVisible && (
+          <Stats parent={statsHostRef as RefObject<HTMLElement>} />
         )}
         {detailLoading && (
           <div className="loading-overlay">Loading neuron morphology…</div>
@@ -400,7 +519,9 @@ export default function App() {
           </div>
         )}
         {payloadLoading && (
-          <div className="loading-overlay">Loading {scenario?.label}…</div>
+          <div className="loading-overlay">
+            <div className="spinner" />
+          </div>
         )}
         {!payload && !payloadLoading && (
           <div className="loading-overlay">Pick a scenario from the right →</div>
@@ -418,11 +539,15 @@ export default function App() {
         )}
       </div>
 
-      <div className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
-        {inDetailMode && payload && selectedNeuronIndex !== null && detail ? (
+      <aside
+        className={`detail-drawer ${selectedNeuronIndex !== null ? "open" : ""}`}
+        aria-hidden={selectedNeuronIndex === null}
+      >
+        {payload && drawerIndex !== null && (
           <NeuronModelInfo
             payload={payload}
-            neuronIndex={selectedNeuronIndex}
+            neuronIndex={drawerIndex}
+            modelId={modelId}
             frameDisplay={displayFrame}
             showConnected={showConnected}
             connectedK={connectedK}
@@ -430,159 +555,246 @@ export default function App() {
             onChangeK={setConnectedK}
             onClose={() => setSelectedNeuronIndex(null)}
           />
-        ) : (
+        )}
+      </aside>
+
+      <div className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
         <>
         <div className="header-row">
-          <h1>Galvani</h1>
-          <span className="badge">v0.1</span>
-        </div>
-
-        <div className="selector">
-          <label htmlFor="dataset-select">Dataset</label>
-          <Dropdown
-            id="dataset-select"
-            value={datasetId ?? ""}
-            options={manifest.datasets.map((d) => ({ value: d.id, label: d.label }))}
-            onChange={(id) => {
-              setDatasetId(id);
-              const ds = manifest.datasets.find((d) => d.id === id);
-              setScenarioId(ds?.scenarios[0]?.id ?? null);
-            }}
+          <img
+            className="logo"
+            src={`${import.meta.env.BASE_URL}icon.png`}
+            alt="Galvani logo"
           />
+          <h1>
+            GALVANI<small className="version">v0.2</small>
+          </h1>
         </div>
 
-        <div className="selector">
-          <label htmlFor="scenario-select">Scenario</label>
-          <Dropdown
-            id="scenario-select"
-            value={scenarioId ?? ""}
-            options={dataset.scenarios.map((s) => ({ value: s.id, label: s.label }))}
-            onChange={(id) => setScenarioId(id)}
-          />
-        </div>
+        <div className="register-stack">
+        <Infobox id="overview" title="Overview" openId={openCard} onToggle={setOpenCard}>
+          <p>
+            You're watching simulated neural activity on real
+            neurons as they react to a given stimulus. Each neuron brightens and
+            dims as it's firing rate changes over time.
+          </p>
+          <p>
+            The starting view shows the logic of a fruit fly's
+            head-direction system play out, but in the <strong>Menu</strong>{" "}
+            you can pick different{" "} <strong>circuits</strong>{" "}
+             (mushroom body, human cortex,
+            whole-brain MRI tractography), <strong>stimuli</strong>{" "}
+            (movement, an odor presentation, etc.), and{" "}
+            <strong>models</strong> of how each neuron computes (from a
+            simple firing-rate model up to detailed biophysics with real
+            ion channels). 
+          </p>
+          <p>
+            Also check out the <strong>Controls</strong> below.
+          </p>
+        </Infobox>
 
-        <div className="selector">
-          <label>Render mode</label>
-          <div className="render-toggle">
-            <button
-              className={renderMode === "lines" ? "active" : ""}
-              onClick={() => setRenderMode("lines")}
-            >
-              Lines
-            </button>
-            <button
-              className={renderMode === "tubes" ? "active" : ""}
-              onClick={() => setRenderMode("tubes")}
-            >
-              Tubes
-            </button>
-          </div>
-        </div>
-
-        {payload && canResim(payload) && (
+        <Infobox id="menu" title="Menu" openId={openCard} onToggle={setOpenCard}>
+          <div className="controls-stack">
           <div className="selector">
-            <label>
-              Live gain ={" "}
-              {(gainOverride ?? payload.metadata.hyperparams.global_gain).toFixed(4)}
-              {resimBusy && <span className="badge" style={{ marginLeft: 8 }}>resimming…</span>}
-            </label>
-            <input
-              type="range"
-              min={0.001}
-              max={0.05}
-              step={0.0005}
-              value={gainOverride ?? payload.metadata.hyperparams.global_gain}
-              onChange={(e) => setGainOverride(parseFloat(e.target.value))}
+            <label htmlFor="dataset-select">Circuit</label>
+            <Dropdown
+              id="dataset-select"
+              value={datasetId ?? ""}
+              options={manifest.datasets.map((d) => ({ value: d.id, label: d.label }))}
+              onChange={(id) => {
+                setDatasetId(id);
+                const ds = manifest.datasets.find((d) => d.id === id);
+                setScenarioId(ds?.scenarios[0]?.id ?? null);
+              }}
             />
-            {gainOverride !== null && (
-              <button
-                className="reset-btn"
-                onClick={() => {
-                  setGainOverride(null);
-                  // Reload original baked payload.
-                  if (scenario && !customPayload) {
-                    loadPayload(scenario.file).then(setPayload);
-                  }
-                }}
-              >
-                Reset to baked gain
-              </button>
-            )}
           </div>
-        )}
 
-        <div className="selector">
-          <label>
-            Custom data{" "}
-            <HelpPopover title="Upload format">
-              <p>
-                The file picker accepts a JSON in Galvani's payload schema v2.
-                Easiest way to make one: clone the repo, run{" "}
-                <code>uv run python scripts/build_demo_payload.py</code> with a
-                neuPrint token, and grab any file under{" "}
-                <code>examples/web_demo/public/</code>.
-              </p>
-              <p>
-                <strong>What's inside a payload:</strong> per-neuron 3D
-                skeletons (positions + radii), per-frame activation rates,
-                optional stimulus signal, and weight matrix metadata.
-                The weight matrix lets the in-browser live-gain slider work.
-              </p>
-              <p>
-                <strong>Sizing:</strong> 100 neurons × 100 frames is roughly
-                100 KB. 1 000 neurons × 100 frames is ~5 MB. The browser
-                fetches the whole file at scenario load, so target ≤10 MB
-                for snappy UX. Heavier scenarios can run but feel sluggish.
-              </p>
-              <p>
-                <strong>Other connectome sources to try:</strong>{" "}
-                <code>neuprint-python</code> (Janelia hemibrain / male-CNS /
-                MANC), <code>fafbseg-py</code> (FlyWire), or HCP/AAL DTI
-                matrices via <code>neurolib</code>. Each needs its own
-                loader; v1 ships hemibrain + DTI.
-              </p>
-            </HelpPopover>
-          </label>
-          <UploadButton
-            onLoad={(p, name) => setCustomPayload({ p, name })}
-            onError={(msg) => setErr(msg)}
-          />
-          {customPayload && (
-            <div className="custom-badge">
-              <span>{customPayload.name}</span>
-              <button onClick={() => setCustomPayload(null)}>×</button>
+          <div className="selector">
+            <label htmlFor="scenario-select">Stimulus</label>
+            <Dropdown
+              id="scenario-select"
+              value={scenarioId ?? ""}
+              options={dataset.scenarios.map((s) => ({ value: s.id, label: s.label }))}
+              onChange={(id) => setScenarioId(id)}
+            />
+          </div>
+
+          <div className="selector">
+            <label>Model</label>
+            <div className="btn-toggle">
+              {(["rate", "lif", "adex", "hh"] as ModelId[]).map((m) => {
+                const available = scenario?.models?.[m] !== undefined;
+                return (
+                  <button
+                    key={m}
+                    className={modelId === m ? "active" : ""}
+                    disabled={!available}
+                    onClick={() => {
+                      setModelId(m);
+                      setSpeed(
+                        m === "hh" ? 0.1 : m === "adex" || m === "lif" ? 0.25 : 1.0,
+                      );
+                    }}
+                  >
+                    {MODEL_LABELS[m]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="selector">
+            <label>Stochasticity</label>
+            <div className="btn-toggle">
+              {[
+                { value: 0, label: "none" },
+                { value: 0.1, label: "low" },
+                { value: 0.3, label: "med" },
+                { value: 0.6, label: "high" },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  className={stochasticity === opt.value ? "active" : ""}
+                  onClick={() => setStochasticity(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="selector">
+            <label>Render mode</label>
+            <div className="btn-toggle">
+              <button
+                className={renderMode === "lines" ? "active" : ""}
+                onClick={() => setRenderMode("lines")}
+              >
+                Linear
+              </button>
+              <button
+                className={renderMode === "tubes" ? "active" : ""}
+                onClick={() => setRenderMode("tubes")}
+              >
+                Tubular
+              </button>
+            </div>
+          </div>
+
+          {payload && canResim(payload) && (
+            <div className="selector">
+              <label>
+                Live gain ={" "}
+                {(gainOverride ?? payload.metadata.hyperparams.global_gain).toFixed(4)}
+                {resimBusy && <span className="badge" style={{ marginLeft: 8 }}>resimming…</span>}
+              </label>
+              <input
+                type="range"
+                min={0.001}
+                max={0.05}
+                step={0.0005}
+                value={gainOverride ?? payload.metadata.hyperparams.global_gain}
+                onChange={(e) => setGainOverride(parseFloat(e.target.value))}
+              />
+              {gainOverride !== null && (
+                <button
+                  className="reset-btn"
+                  onClick={() => {
+                    setGainOverride(null);
+                    const file = scenario?.models?.[modelId] ?? scenario?.models?.["rate"] ?? scenario?.file;
+                    if (file && !customPayload) {
+                      loadPayload(file).then(setPayload);
+                    }
+                  }}
+                >
+                  Reset to baked gain
+                </button>
+              )}
             </div>
           )}
-        </div>
 
-        <Infobox title="What am I looking at?">
+          <div className="selector">
+            <label>
+              Custom data{" "}
+              <HelpPopover title="Upload format">
+                <p>
+                  The file picker accepts a JSON in Galvani's payload schema v2.
+                  Easiest way to make one: clone the repo, run{" "}
+                  <code>uv run python scripts/build_demo_payload.py</code> with a
+                  neuPrint token, and grab any file under{" "}
+                  <code>examples/web_demo/public/</code>.
+                </p>
+                <p>
+                  <strong>What's inside a payload:</strong> per-neuron 3D
+                  skeletons (positions + radii), per-frame activation rates,
+                  optional stimulus signal, and weight matrix metadata.
+                  The weight matrix lets the in-browser live-gain slider work.
+                </p>
+                <p>
+                  <strong>Sizing:</strong> 100 neurons × 100 frames is roughly
+                  100 KB. 1 000 neurons × 100 frames is ~5 MB. The browser
+                  fetches the whole file at scenario load, so target ≤10 MB
+                  for snappy UX. Heavier scenarios can run but feel sluggish.
+                </p>
+                <p>
+                  <strong>Other connectome sources to try:</strong>{" "}
+                  <code>neuprint-python</code> (Janelia hemibrain / male-CNS /
+                  MANC), <code>fafbseg-py</code> (FlyWire), or HCP/AAL DTI
+                  matrices via <code>neurolib</code>. Each needs its own
+                  loader; v1 ships hemibrain + DTI.
+                </p>
+              </HelpPopover>
+            </label>
+            <UploadButton
+              inputRef={uploadInputRef}
+              onLoad={(p, name) => setCustomPayload({ p, name })}
+              onError={(msg) => setErr(msg)}
+            />
+            {customPayload && (
+              <div className="custom-badge">
+                <span>{customPayload.name}</span>
+                <button onClick={() => setCustomPayload(null)}>×</button>
+              </div>
+            )}
+          </div>
+          </div>
+        </Infobox>
+
+        <Infobox id="model" title="Model" openId={openCard} onToggle={setOpenCard}>
           <p>
-            A pre-computed rate-model simulation played back on top of the
-            EM-traced skeletons of every neuron in the circuit. The Galvani
-            pipeline goes: <code>Connectome</code> → <code>Subgraph</code> →{" "}
-            <code>Parameterizer</code> → <code>Simulator</code>.
+            Four levels of detail are available; pick from the{" "}
+            <strong>Model</strong> dropdown above. Same circuit, different
+            equations per neuron.
           </p>
+          <ul style={{ paddingLeft: 18, margin: "4px 0", fontSize: 12 }}>
+            <li>
+              <strong>Rate</strong> — one scalar firing rate per neuron, no
+              spikes. Fast; population-level dynamics. Default for most
+              scenarios.
+            </li>
+            <li>
+              <strong>LIF</strong> — leaky integrate-and-fire. Voltage + spike
+              + reset + refractory.
+            </li>
+            <li>
+              <strong>AdEx</strong> — adaptive exponential IF. Adds spike-frequency
+              adaptation and bursting (Brette & Gerstner 2005).
+            </li>
+            <li>
+              <strong>HH</strong> — full Hodgkin-Huxley. Real ion-channel
+              kinetics (Na+/K+/leak). Slowest to simulate.
+            </li>
+          </ul>
           <p>
-            <strong>Hue</strong> = cell type. <strong>Brightness</strong> =
-            firing rate at the current frame. A magenta tint signals which
-            neurons are receiving non-zero <strong>external input</strong> at
-            this moment.
-          </p>
-          <p>
-            <strong>Interaction:</strong> mouse-drag to orbit, scroll to zoom,
-            hover a neuron for body id / rate / input. The scrubber below is
-            simulated time; the speed selector controls playback rate.
-          </p>
-          <p>
-            <strong>Render modes:</strong> "Lines" draws each skeleton as 2px
-            camera-facing quads (fast). "Tubes" draws each segment as a 3D
-            cylinder sized by the SWC radius (slower, closer to Neuroglancer
-            aesthetic).
+            <strong>Stochasticity:</strong> the slider lets you add Gaussian
+            noise to the voltage equation (channel noise / synaptic failure).
+            0 = deterministic.
           </p>
         </Infobox>
 
         {payload && (
-          <Infobox title={`Dataset · ${dataset.label}`}>
+          <Infobox id="circuit" title="Circuit" openId={openCard} onToggle={setOpenCard}>
             <p>{dataset.summary}</p>
             <p>{dataset.biology}</p>
             <div className="kv">
@@ -611,7 +823,7 @@ export default function App() {
         )}
 
         {payload && (
-          <Infobox title={`Scenario · ${payload.metadata.scenario_label}`}>
+          <Infobox id="stimulus" title="Stimulus" openId={openCard} onToggle={setOpenCard}>
             <p>{payload.metadata.description}</p>
             <div className="kv">
               <span className="k">duration</span>
@@ -656,7 +868,7 @@ export default function App() {
         )}
 
         {payload && (
-          <Infobox title="Hyperparameters & assumptions">
+          <Infobox id="details" title="Details" openId={openCard} onToggle={setOpenCard}>
             <HyperParamsView hp={payload.metadata.hyperparams} />
             <p style={{ marginTop: 8 }}>
               <strong>Do these dynamics make sense?</strong>
@@ -684,11 +896,63 @@ export default function App() {
             </p>
           </Infobox>
         )}
+
+        <Infobox id="controls" title="Controls" openId={openCard} onToggle={setOpenCard}>
+          <p>
+            Drag to orbit, scroll to zoom, hover
+            a neuron for info, click one to drill in and see its full
+            morphology and the model running on it. The{" "}
+            <em>magenta tint</em> marks neurons currently receiving
+            external input. The slider below is simulated time; the
+            speed dropdown next to it controls playback rate.
+          </p>
+          <dl className="shortcuts-list">
+            <div className="shortcut-row">
+              <kbd>Space</kbd>
+              <span>Play / pause</span>
+            </div>
+            <div className="shortcut-row">
+              <kbd>T</kbd>
+              <span>Toggle Linear / Tubular render</span>
+            </div>
+            <div className="shortcut-row">
+              <kbd>S</kbd>
+              <span>Toggle last-viewed neuron's detail view</span>
+            </div>
+            <div className="shortcut-row">
+              <kbd>N</kbd>
+              <span>(In detail view) Toggle Show neighbors</span>
+            </div>
+            <div className="shortcut-row">
+              <kbd>Esc</kbd>
+              <span>Close detail view</span>
+            </div>
+            <div className="shortcut-row">
+              <kbd>J</kbd>
+              <span>Upload a custom payload JSON</span>
+            </div>
+            <div className="shortcut-row">
+              <kbd>F</kbd>
+              <span>Toggle the FPS / memory stats overlay</span>
+            </div>
+          </dl>
+        </Infobox>
+        </div>
         </>
-        )}
       </div>
 
-      <div className="controls">
+      <div
+        className={`controls ${controlsVisible ? "visible" : "hidden"} ${
+          selectedNeuronIndex !== null ? "snv-open" : ""
+        }`}
+        onMouseEnter={() => {
+          controlsHoldRef.current = true;
+          setControlsVisible(true);
+        }}
+        onMouseLeave={() => {
+          controlsHoldRef.current = false;
+        }}
+      >
         <button
           className="play-btn"
           onClick={() => setPlaying((p) => !p)}
@@ -721,11 +985,11 @@ export default function App() {
           value={speed}
           openDirection="up"
           options={[
-            { value: 0.05, label: "0.05× (very slow)" },
+            { value: 0.05, label: "0.05×" },
             { value: 0.1, label: "0.1×" },
             { value: 0.25, label: "0.25×" },
             { value: 0.5, label: "0.5×" },
-            { value: 1.0, label: "1× (real time)" },
+            { value: 1.0, label: "1×" },
             { value: 2.0, label: "2×" },
             { value: 4.0, label: "4×" },
           ]}

@@ -5,6 +5,9 @@ Re-read this list at the start of every work session. If a new idea arrives, wri
 
 ## v1.5
 
+- **Real H01 cell data via cloud-volume.** Currently `connectome/h01.py` ships an H01-*inspired* canonical microcircuit (cell types + connectivity densities from Shapson-Coe 2024). The real data is hosted at `gs://h01-release/data/20210601/c3` and accessible via `cloud-volume`, but mesh / skeleton downloads are slow (multi-resolution Draco-compressed). Cleanly extracting ~50 proofread cells + their synapse predictions into a `Subgraph` is doable but needs ~1-2 days of focused integration work: fetch meshes, decimate to SWC skeletons via `kimimaro`, parse synapse-prediction annotation layers from `synapses_400nm/`. Same outline could load MICrONS mouse data via `caveclient`.
+
+
 - **FlyWire / CAVE connectome backend.** Second connectome source. Forces clean abstraction.
 - **Interventions module.** Ablation, activity patching, weight scaling.
 - **NeuroML / Brian2 export polish.** Round-tripped `ModelSpec` to NeuroML.

@@ -43,4 +43,23 @@ def fly_default(nt: str | None) -> Sign:
     return FLY_NT_SIGN.get(nt.lower(), 0)
 
 
+MAMMALIAN_NT_SIGN: Final[dict[str, Sign]] = {
+    "glutamate": +1,  # AMPA / NMDA -- excitatory in mammals (opposite of fly!)
+    "gaba": -1,
+    "acetylcholine": +1,
+    "serotonin": 0,
+    "dopamine": 0,
+    "noradrenaline": 0,
+}
+"""Default mammalian NT -> sign. Critical difference from fly: glutamate
+is excitatory in mammals (AMPA/NMDA receptors), not inhibitory."""
+
+
+def mammalian_default(nt: str | None) -> Sign:
+    """Map NT to synaptic sign with mammalian conventions."""
+    if nt is None:
+        return 0
+    return MAMMALIAN_NT_SIGN.get(nt.lower(), 0)
+
+
 NTToSign = Callable[[str | None], Sign]

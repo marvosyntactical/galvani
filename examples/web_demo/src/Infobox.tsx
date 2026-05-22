@@ -1,24 +1,32 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 interface Props {
+  id: string;
   title: string;
   children: ReactNode;
-  defaultOpen?: boolean;
+  /** Controlled accordion: parent decides which card is open. */
+  openId: string | null;
+  onToggle: (id: string | null) => void;
 }
 
-export function Infobox({ title, children, defaultOpen = false }: Props) {
-  const [open, setOpen] = useState(defaultOpen);
+export function Infobox({ id, title, children, openId, onToggle }: Props) {
+  const open = openId === id;
   return (
-    <div className={`infobox ${open ? "open" : ""}`}>
+    <section className={`infobox ${open ? "open" : ""}`}>
       <button
         className="infobox-header"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => onToggle(open ? null : id)}
         aria-expanded={open}
       >
-        <span className="caret">{open ? "▾" : "▸"}</span>
-        <span className="title">{title}</span>
+        <span className="infobox-marker" aria-hidden />
+        <span className="infobox-title">{title}</span>
+        <span className="infobox-chevron" aria-hidden>
+          {open ? "−" : "+"}
+        </span>
       </button>
-      {open && <div className="infobox-body">{children}</div>}
-    </div>
+      <div className="infobox-collapse" aria-hidden={!open}>
+        <div className="infobox-body">{children}</div>
+      </div>
+    </section>
   );
 }

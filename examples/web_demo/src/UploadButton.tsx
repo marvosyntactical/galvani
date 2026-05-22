@@ -1,9 +1,13 @@
-import { useRef } from "react";
+import { useRef, type RefObject } from "react";
 import type { Payload } from "./payload";
 
 interface Props {
   onLoad: (p: Payload, name: string) => void;
   onError: (msg: string) => void;
+  /** Optional external ref to the hidden <input>. App.tsx forwards this
+   *  so the global `J` keyboard shortcut can imperatively click() the
+   *  file picker. */
+  inputRef?: RefObject<HTMLInputElement>;
 }
 
 /**
@@ -13,8 +17,9 @@ interface Props {
  *
  * The file is parsed in-memory, schema-checked, and handed back to App.
  */
-export function UploadButton({ onLoad, onError }: Props) {
-  const ref = useRef<HTMLInputElement>(null);
+export function UploadButton({ onLoad, onError, inputRef }: Props) {
+  const localRef = useRef<HTMLInputElement>(null);
+  const ref = inputRef ?? localRef;
   return (
     <>
       <button className="upload-btn" onClick={() => ref.current?.click()}>

@@ -28,9 +28,13 @@ from galvani.circuits.mushroom_body import MB_NT, load_mushroom_body
 from galvani.connectome.base import Subgraph
 from galvani.connectome.cache import ParquetCache
 from galvani.connectome.dti import DTIConnectome
+from galvani.connectome.h01 import H01StyleConnectome
 from galvani.connectome.hemibrain import HD_RING_NT, HemibrainConnectome
+from galvani.model.adex import simulate_adex
+from galvani.model.hh import simulate_hh
 from galvani.model.lif import simulate_lif
 from galvani.model.rate import relu, tanh
+from galvani.parameterize.signs import mammalian_default
 from galvani.stimuli import (
     pulse_stimulus_for_ids,
     ring_stimulus,
@@ -48,6 +52,7 @@ class ScenarioOutput:
     file: str
     description: str
     size_kb: float
+    model_id: str = "rate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +71,29 @@ class ScenarioSpec:
     id: str
     label: str
     description: str
+
+
+# Map `hyperparams.activation` (set per scenario at bake time) to the
+# canonical model id the frontend uses in the Model dropdown.
+ACTIVATION_TO_MODEL_ID: dict[str, str] = {
+    "tanh": "rate",
+    "relu": "rate",
+    "LIF": "lif",
+    "AdEx": "adex",
+    "HH": "hh",
+}
+
+
+def _scenario_filename(circuit_id: str, scenario_id: str, model_id: str) -> str:
+    """Canonical file name for one (circuit, scenario, model) tuple."""
+    if model_id == "rate":
+        return f"{circuit_id}_{scenario_id}.json"
+    return f"{circuit_id}_{scenario_id}_{model_id}.json"
+
+
+def _model_id_of(payload: dict) -> str:
+    act = payload.get("metadata", {}).get("hyperparams", {}).get("activation", "tanh")
+    return ACTIVATION_TO_MODEL_ID.get(act, "rate")
 
 
 # ---------------- HD ring ----------------------------------------------------
@@ -657,8 +685,14 @@ def mushroom_body_scenarios(conn: HemibrainConnectome):
 
 
 def lif_hd_ring_scenarios(subgraph, angles, n_neurons, neuron_ids):
-    """One LIF (spiking) HD-ring scenario."""
-    gain = 0.04  # LIF needs more drive than rate model
+    """LIF, AdEx, and HH versions of the HD-ring tracking + velocity_left
+    scenarios.
+
+    Same circuit, same stimulus topology as the rate variants, different
+    neuron model. Velocity_left is the default scenario on the demo, so
+    we bake all four model variants for it.
+    """
+    gain = 0.04
     opts = ParameterizerOptions(symmetrize=True, global_gain=gain)
     spec = default_parameterizer(subgraph, opts)
     omega = 1.0
@@ -667,7 +701,7 @@ def lif_hd_ring_scenarios(subgraph, angles, n_neurons, neuron_ids):
     result = simulate_lif(spec, duration=2.0, stimulus=stim, dt=2e-4, v_threshold=0.5)
     yield (
         ScenarioSpec(
-            id="lif_tracking",
+            id="tracking",
             label="LIF spikes: rotating stim",
             description=(
                 "Same hemibrain HD ring, but simulated with a leaky integrate-"
@@ -682,7 +716,7 @@ def lif_hd_ring_scenarios(subgraph, angles, n_neurons, neuron_ids):
             skeleton_provider=_PROVIDER,
             spec=spec,
             dataset_id="hd_ring",
-            scenario_id="lif_tracking",
+            scenario_id="tracking",
             scenario_label="LIF spiking · rotating stim",
             description=(
                 "Biophysical LIF simulation of the HD ring under a rotating "
@@ -713,6 +747,305 @@ def lif_hd_ring_scenarios(subgraph, angles, n_neurons, neuron_ids):
             stride=40,
             min_radius=8.0,
             n_frames=120,
+        ),
+    )
+
+    # AdEx version: same circuit + stimulus, adaptive-exponential IF cells
+    result_adex = simulate_adex(
+        spec,
+        duration=2.0,
+        stimulus=stim,
+        dt=2e-4,
+        v_threshold=0.6,
+        a=0.04,
+        b=0.2,
+    )
+    yield (
+        ScenarioSpec(
+            id="tracking",
+            label="AdEx spikes (with adaptation)",
+            description=(
+                "Same HD ring + rotating stimulus, simulated with adaptive "
+                "exponential integrate-and-fire (AdEx). Adds spike-frequency "
+                "adaptation -- neurons fire faster at stim onset then slow "
+                "down as adaptation current builds up."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_adex,
+            skeleton_provider=_PROVIDER,
+            spec=spec,
+            dataset_id="hd_ring",
+            scenario_id="tracking",
+            scenario_label="AdEx spiking · rotating stim",
+            description=(
+                "Adaptive exponential integrate-and-fire (Brette & Gerstner "
+                "2005). Two ODEs per neuron: voltage `v` plus adaptation "
+                "current `w` that builds with each spike and decays slowly. "
+                "Spike-frequency adaptation, bursting, and accommodation "
+                "all emerge naturally. Compare to the LIF scenario to see "
+                "what adaptation buys you."
+            ),
+            hyperparams={
+                "global_gain": gain,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "AdEx",
+                "dt_sim": 2e-4,
+                "v_threshold": 0.6,
+                "v_reset": 0.0,
+                "t_refractory_s": 0.002,
+                "tau_w_s": 0.15,
+                "adaptation_a": 0.04,
+                "adaptation_b": 0.2,
+                "stimulus": {
+                    "type": "rotating",
+                    "omega_rad_per_s": omega,
+                    "width_rad": 0.5,
+                    "amplitude": 1.5,
+                },
+            },
+            angles=angles,
+            stim_fn=stim,
+            stride=40,
+            min_radius=8.0,
+            n_frames=120,
+        ),
+    )
+
+    # Hodgkin-Huxley version: full ion-channel dynamics
+    stim_hh = rotating_stimulus(angles, omega=omega, width=0.5, amplitude=0.6)
+    result_hh = simulate_hh(spec, duration=0.4, stimulus=stim_hh, dt=5e-5)
+    yield (
+        ScenarioSpec(
+            id="tracking",
+            label="Hodgkin-Huxley spikes (full biophysics)",
+            description=(
+                "Same HD ring + rotating stimulus, simulated with full "
+                "Hodgkin-Huxley dynamics. Real ion channels (Na+/K+/leak) "
+                "with voltage-gated kinetics. Much slower to simulate -- "
+                "only 400 ms shown."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_hh,
+            skeleton_provider=_PROVIDER,
+            spec=spec,
+            dataset_id="hd_ring",
+            scenario_id="tracking",
+            scenario_label="Hodgkin-Huxley · rotating stim",
+            description=(
+                "Single-compartment Hodgkin-Huxley (Hodgkin & Huxley 1952, "
+                "Nobel 1963). Voltage v plus three gating variables m, h, n "
+                "for Na+ activation/inactivation and K+ activation. Real "
+                "action-potential shape emerges from the ion-channel "
+                "dynamics rather than being prescribed by threshold + reset. "
+                "Computationally heavy -- this scenario is 400 ms only."
+            ),
+            hyperparams={
+                "global_gain": gain,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "HH",
+                "dt_sim": 5e-5,
+                "g_Na": 120.0,
+                "g_K": 36.0,
+                "g_L": 0.3,
+                "stimulus": {
+                    "type": "rotating",
+                    "omega_rad_per_s": omega,
+                    "width_rad": 0.5,
+                    "amplitude": 0.6,
+                },
+            },
+            angles=angles,
+            stim_fn=stim_hh,
+            stride=40,
+            min_radius=8.0,
+            n_frames=80,
+        ),
+    )
+    # ---- Velocity-left variants (the demo's default scenario) ---------------
+    # Bump-establish + left-PEN pulse, same stim shape as the rate variant.
+    neurons_list = subgraph.neurons
+    pen_l = [
+        nn.id
+        for nn in neurons_list
+        if nn.cell_type in ("PEN_a(PEN1)", "PEN_b(PEN2)") and nn.hemisphere == "L"
+    ]
+    base_bump = ring_stimulus(angles, center=np.pi / 2, width=0.5, amplitude=1.5)
+
+    def vel_left_init(t: float) -> np.ndarray:
+        return base_bump(t) if t < 0.3 else np.zeros(n_total)
+
+    pulse_vl = pulse_stimulus_for_ids(
+        pen_l, neuron_ids, t0=0.5, duration=0.5, amplitude=1.0
+    )
+    stim_vl = sum_stimuli(vel_left_init, pulse_vl)
+
+    result_vl_lif = simulate_lif(
+        spec, duration=1.5, stimulus=stim_vl, dt=2e-4, v_threshold=0.5
+    )
+    yield (
+        ScenarioSpec(
+            id="velocity_left",
+            label="LIF spikes · L-PEN velocity pulse",
+            description=(
+                "Establish a bump, then pulse left-PEN cells. Bump rotates "
+                "via the asymmetric loop. Spiking (LIF) version."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_vl_lif,
+            skeleton_provider=_PROVIDER,
+            spec=spec,
+            dataset_id="hd_ring",
+            scenario_id="velocity_left",
+            scenario_label="Velocity integration (L-PEN) · LIF",
+            description=(
+                "Init bump at pi/2 (300 ms) then pulse L-PEN from 0.5-1.0 s. "
+                "Spiking LIF dynamics — bump rotates via the asymmetric loop."
+            ),
+            hyperparams={
+                "global_gain": gain,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "LIF",
+                "dt_sim": 2e-4,
+                "v_threshold": 0.5,
+                "v_reset": 0.0,
+                "t_refractory_s": 0.002,
+                "syn_tau_s": 0.005,
+                "stimulus": {
+                    "type": "velocity_pulse",
+                    "init_center_rad": float(np.pi / 2),
+                    "pulse_target": "PEN_L",
+                    "pulse_t0_s": 0.5,
+                    "pulse_duration_s": 0.5,
+                    "pulse_amplitude": 1.0,
+                },
+            },
+            angles=angles,
+            stim_fn=stim_vl,
+            stride=40,
+            min_radius=8.0,
+            n_frames=120,
+        ),
+    )
+
+    result_vl_adex = simulate_adex(
+        spec, duration=1.5, stimulus=stim_vl, dt=2e-4, v_threshold=0.6, a=0.04, b=0.2
+    )
+    yield (
+        ScenarioSpec(
+            id="velocity_left",
+            label="AdEx spikes · L-PEN velocity pulse",
+            description=(
+                "Same as the LIF velocity_left scenario but with adaptive "
+                "exponential IF dynamics (Brette & Gerstner 2005)."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_vl_adex,
+            skeleton_provider=_PROVIDER,
+            spec=spec,
+            dataset_id="hd_ring",
+            scenario_id="velocity_left",
+            scenario_label="Velocity integration (L-PEN) · AdEx",
+            description=(
+                "Init bump then L-PEN pulse, adaptive-exponential IF cells. "
+                "Spike-frequency adaptation reshapes the bump dynamics."
+            ),
+            hyperparams={
+                "global_gain": gain,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "AdEx",
+                "dt_sim": 2e-4,
+                "v_threshold": 0.6,
+                "v_reset": 0.0,
+                "t_refractory_s": 0.002,
+                "tau_w_s": 0.15,
+                "adaptation_a": 0.04,
+                "adaptation_b": 0.2,
+                "stimulus": {
+                    "type": "velocity_pulse",
+                    "init_center_rad": float(np.pi / 2),
+                    "pulse_target": "PEN_L",
+                    "pulse_t0_s": 0.5,
+                    "pulse_duration_s": 0.5,
+                    "pulse_amplitude": 1.0,
+                },
+            },
+            angles=angles,
+            stim_fn=stim_vl,
+            stride=40,
+            min_radius=8.0,
+            n_frames=120,
+        ),
+    )
+
+    # HH is heavy — short window, lower-amplitude stim
+    base_bump_hh = ring_stimulus(angles, center=np.pi / 2, width=0.5, amplitude=0.6)
+
+    def vel_left_init_hh(t: float) -> np.ndarray:
+        return base_bump_hh(t) if t < 0.1 else np.zeros(n_total)
+
+    pulse_vl_hh = pulse_stimulus_for_ids(
+        pen_l, neuron_ids, t0=0.15, duration=0.2, amplitude=0.4
+    )
+    stim_vl_hh = sum_stimuli(vel_left_init_hh, pulse_vl_hh)
+    result_vl_hh = simulate_hh(spec, duration=0.4, stimulus=stim_vl_hh, dt=5e-5)
+    yield (
+        ScenarioSpec(
+            id="velocity_left",
+            label="HH spikes · L-PEN velocity pulse",
+            description=(
+                "Same as the LIF/AdEx velocity_left scenarios but with full "
+                "Hodgkin-Huxley ion-channel dynamics. 400 ms only — HH is "
+                "computationally heavy."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_vl_hh,
+            skeleton_provider=_PROVIDER,
+            spec=spec,
+            dataset_id="hd_ring",
+            scenario_id="velocity_left",
+            scenario_label="Velocity integration (L-PEN) · HH",
+            description=(
+                "Init bump (100 ms) then L-PEN pulse, full Hodgkin-Huxley "
+                "ion-channel dynamics. Real action-potential shape emerges "
+                "from Na+/K+/leak conductances."
+            ),
+            hyperparams={
+                "global_gain": gain,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "HH",
+                "dt_sim": 5e-5,
+                "g_Na": 120.0,
+                "g_K": 36.0,
+                "g_L": 0.3,
+                "stimulus": {
+                    "type": "velocity_pulse",
+                    "init_center_rad": float(np.pi / 2),
+                    "pulse_target": "PEN_L",
+                    "pulse_t0_s": 0.15,
+                    "pulse_duration_s": 0.2,
+                    "pulse_amplitude": 0.4,
+                },
+            },
+            angles=angles,
+            stim_fn=stim_vl_hh,
+            stride=40,
+            min_radius=8.0,
+            n_frames=80,
         ),
     )
     _ = n_total, neuron_ids  # silence unused (kept for signature parity)
@@ -907,6 +1240,130 @@ def dti_real_scenarios(mat_path: Path):
     )
 
 
+# ---------------- H01-inspired cortical microcircuit -------------------------
+
+
+def h01_scenarios():
+    """H01-inspired cortical microcircuit scenarios.
+
+    Drives the L4 stellate ("sensory input") population, watches activity
+    propagate through L4 -> L2/3 -> L5 -- the canonical cortical column
+    pathway. Inhibition from PV/SST/VIP shapes the response.
+    """
+    conn = H01StyleConnectome.synthetic(seed=0)
+    neurons = conn.query()
+    subgraph = conn.subgraph(neurons)
+    n = len(neurons)
+
+    # Mammalian NT signs: glutamate is excitatory (opposite of fly).
+    opts = ParameterizerOptions(
+        symmetrize=False,
+        global_gain=0.08,
+        weight_heuristic="log1p",
+        nt_to_sign=mammalian_default,
+    )
+    spec = default_parameterizer(subgraph, opts)
+
+    common_hp = {
+        "global_gain": 0.08,
+        "symmetrize": False,
+        "weight_heuristic": "log1p",
+        "nt_to_sign": "mammalian_default",
+        "activation": "tanh",
+        "dt_sim": 5e-4,
+        "tau_default_ms": 20.0,
+    }
+
+    # Scenario 1: brief L4 sensory pulse → L2/3 → L5 cascade.
+    l4_indices = np.array([i for i, nn in enumerate(neurons) if nn.cell_type == "L4_stellate"])
+    pat_l4 = np.zeros(n, dtype=np.float64)
+    pat_l4[l4_indices] = 1.0
+
+    def stim_cascade(t: float) -> np.ndarray:
+        # 100 ms pulse, watch it propagate
+        return pat_l4 if t < 0.1 else np.zeros(n)
+
+    result_cascade = simulate(spec, duration=0.8, stimulus=stim_cascade, activation=tanh, dt=5e-4)
+    yield (
+        ScenarioSpec(
+            id="sensory_pulse",
+            label="L4 sensory pulse → cortical cascade",
+            description=(
+                "Brief input to L4 stellate cells (the canonical sensory "
+                "input layer), watch activity propagate L4 → L2/3 → L5. "
+                "PV/SST interneurons shape the response."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_cascade,
+            skeleton_provider=conn,
+            spec=spec,
+            dataset_id="h01_style",
+            scenario_id="sensory_pulse",
+            scenario_label="Sensory pulse → cortical cascade",
+            description=(
+                "100 ms input to L4 spiny stellate cells (the cortical sensory "
+                "input layer). The Douglas-Martin canonical microcircuit predicts "
+                "activity flows L4 → L2/3 → L5; the L2/3 PV/SST interneurons "
+                "shape the response. Watch which layers light up in sequence."
+            ),
+            hyperparams={
+                **common_hp,
+                "stimulus": {"type": "L4_pulse", "amplitude": 1.0, "duration_s": 0.1},
+            },
+            stim_fn=stim_cascade,
+            stride=1,
+            min_radius=0.0,
+            n_frames=80,
+            target_scale=15.0,
+        ),
+    )
+
+    # Scenario 2: sustained drive → inhibition-stabilized network (ISN)
+    def stim_sustained(t: float) -> np.ndarray:
+        return pat_l4 * 0.5  # always on, half amplitude
+
+    result_isn = simulate(spec, duration=1.0, stimulus=stim_sustained, activation=tanh, dt=5e-4)
+    yield (
+        ScenarioSpec(
+            id="sustained_drive",
+            label="Sustained drive → steady state",
+            description=(
+                "Constant input to L4. The network reaches an inhibition-"
+                "stabilized steady state where excitation and inhibition "
+                "balance each other -- the canonical cortical operating point."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result_isn,
+            skeleton_provider=conn,
+            spec=spec,
+            dataset_id="h01_style",
+            scenario_id="sustained_drive",
+            scenario_label="Sustained drive · ISN steady state",
+            description=(
+                "Constant drive on L4 stellates. The cortical microcircuit "
+                "settles into an inhibition-stabilized state where every "
+                "increase in excitatory activity is balanced by recruited "
+                "inhibition from PV/SST cells. This balance is what real "
+                "cortex spends most of its time in (Tsodyks 1997, Rubin et al. "
+                "2015)."
+            ),
+            hyperparams={
+                **common_hp,
+                "stimulus": {"type": "L4_sustained", "amplitude": 0.5},
+            },
+            stim_fn=stim_sustained,
+            stride=1,
+            min_radius=0.0,
+            n_frames=80,
+            target_scale=15.0,
+        ),
+    )
+
+
 # ---------------- Top-level driver -------------------------------------------
 
 
@@ -960,7 +1417,8 @@ def main() -> None:
         ),
     ):
         for scenario_spec, payload in gen:
-            path = out_dir / f"hd_ring_{scenario_spec.id}.json"
+            model_id = _model_id_of(payload)
+            path = out_dir / _scenario_filename("hd_ring", scenario_spec.id, model_id)
             write_payload(payload, path)
             size_kb = path.stat().st_size / 1024
             hd_outputs.append(
@@ -971,9 +1429,10 @@ def main() -> None:
                     file=path.name,
                     description=scenario_spec.description,
                     size_kb=size_kb,
+                    model_id=model_id,
                 )
             )
-            print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
+            print(f"  {path.name}: {size_kb:.0f} KiB · model={model_id} · {scenario_spec.label}")
 
     # ----- Mushroom body -----
     conn_mb = HemibrainConnectome(cache=cache, nt_by_type=MB_NT)
@@ -1003,7 +1462,8 @@ def main() -> None:
     )
     mb_outputs: list[ScenarioOutput] = []
     for scenario_spec, payload in mushroom_body_scenarios(conn_mb):
-        path = out_dir / f"mushroom_body_{scenario_spec.id}.json"
+        model_id = _model_id_of(payload)
+        path = out_dir / _scenario_filename("mushroom_body", scenario_spec.id, model_id)
         write_payload(payload, path)
         size_kb = path.stat().st_size / 1024
         mb_outputs.append(
@@ -1014,9 +1474,55 @@ def main() -> None:
                 file=path.name,
                 description=scenario_spec.description,
                 size_kb=size_kb,
+                model_id=model_id,
             )
         )
-        print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
+        print(f"  {path.name}: {size_kb:.0f} KiB · model={model_id} · {scenario_spec.label}")
+
+    # ----- H01-inspired cortical microcircuit -----
+    print("\n[h01_style] H01-inspired cortical microcircuit (60 cells)")
+    h01_dataset = DatasetSpec(
+        id="h01_style",
+        label="Human cortex microcircuit (H01-inspired)",
+        summary=(
+            "60-neuron mammalian cortical microcircuit. Cell types and "
+            "connection densities drawn from the H01 human-cortex EM paper."
+        ),
+        biology=(
+            "Inspired by Shapson-Coe et al. 2024 (Science) -- the H01 "
+            "dataset is ~1 mm³ of EM-traced human temporal cortex, ~50k "
+            "cells. We don't ship the raw H01 data (it needs cloud-volume "
+            "and a serious processing pipeline). Instead this circuit is a "
+            "canonical microcircuit (Douglas & Martin 2004): three "
+            "excitatory pyramidal populations (L2/3, L4 stellate, L5) plus "
+            "three inhibitory interneuron classes (PV-basket, SST-Martinotti, "
+            "VIP-bipolar) with H01-paper-derived connection densities. "
+            "Critical mammalian-vs-fly difference: glutamate is "
+            "EXCITATORY here (AMPA / NMDA), not inhibitory like in fly. "
+            "The parameterizer uses `mammalian_default` NT signs. Full "
+            "cloud-volume integration to pull the literal H01 cells is "
+            "in BACKLOG."
+        ),
+        scenarios=[],
+    )
+    h01_outputs: list[ScenarioOutput] = []
+    for scenario_spec, payload in h01_scenarios():
+        model_id = _model_id_of(payload)
+        path = out_dir / _scenario_filename("h01", scenario_spec.id, model_id)
+        write_payload(payload, path)
+        size_kb = path.stat().st_size / 1024
+        h01_outputs.append(
+            ScenarioOutput(
+                dataset_id="h01_style",
+                scenario_id=scenario_spec.id,
+                label=scenario_spec.label,
+                file=path.name,
+                description=scenario_spec.description,
+                size_kb=size_kb,
+                model_id=model_id,
+            )
+        )
+        print(f"  {path.name}: {size_kb:.0f} KiB · model={model_id} · {scenario_spec.label}")
 
     # ----- Real DTI (HCP NAP_001 via neurolib, AAL2 parcellation) -----
     dti_real_path = repo / "tests" / "fixtures" / "dti_hcp" / "DTI_CM.mat"
@@ -1046,7 +1552,8 @@ def main() -> None:
     if dti_real_path.exists():
         print("\n[dti_hcp] real HCP/AAL2 data")
         for scenario_spec, payload in dti_real_scenarios(dti_real_path):
-            path = out_dir / f"dti_hcp_{scenario_spec.id}.json"
+            model_id = _model_id_of(payload)
+            path = out_dir / _scenario_filename("dti_hcp", scenario_spec.id, model_id)
             write_payload(payload, path)
             size_kb = path.stat().st_size / 1024
             dti_real_outputs.append(
@@ -1057,61 +1564,55 @@ def main() -> None:
                     file=path.name,
                     description=scenario_spec.description,
                     size_kb=size_kb,
+                    model_id=model_id,
                 )
             )
-            print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
+            print(f"  {path.name}: {size_kb:.0f} KiB · model={model_id} · {scenario_spec.label}")
     else:
         print(f"\n[dti_hcp] skipped: {dti_real_path} not found")
 
     # ----- Manifest -----
+    # Group by (dataset_id, scenario_id), collect available models per scenario.
+    def _group_by_scenario(
+        outputs: list[ScenarioOutput], preferred_first: str | None = None
+    ) -> list[dict[str, Any]]:
+        seen: dict[str, dict[str, Any]] = {}
+        for o in outputs:
+            entry = seen.setdefault(
+                o.scenario_id,
+                {
+                    "id": o.scenario_id,
+                    "label": o.label,
+                    "description": o.description,
+                    "models": {},
+                },
+            )
+            entry["models"][o.model_id] = o.file
+        items = list(seen.values())
+        if preferred_first and any(e["id"] == preferred_first for e in items):
+            items.sort(key=lambda e: 0 if e["id"] == preferred_first else 1)
+        return items
+
+    def _dataset_entry(
+        ds: DatasetSpec,
+        outputs: list[ScenarioOutput],
+        preferred_first: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": ds.id,
+            "label": ds.label,
+            "summary": ds.summary,
+            "biology": ds.biology,
+            "scenarios": _group_by_scenario(outputs, preferred_first=preferred_first),
+        }
+
     manifest: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "datasets": [
-            {
-                "id": hd_dataset.id,
-                "label": hd_dataset.label,
-                "summary": hd_dataset.summary,
-                "biology": hd_dataset.biology,
-                "scenarios": [
-                    {
-                        "id": o.scenario_id,
-                        "label": o.label,
-                        "file": o.file,
-                        "description": o.description,
-                    }
-                    for o in hd_outputs
-                ],
-            },
-            {
-                "id": mb_dataset.id,
-                "label": mb_dataset.label,
-                "summary": mb_dataset.summary,
-                "biology": mb_dataset.biology,
-                "scenarios": [
-                    {
-                        "id": o.scenario_id,
-                        "label": o.label,
-                        "file": o.file,
-                        "description": o.description,
-                    }
-                    for o in mb_outputs
-                ],
-            },
-            {
-                "id": dti_real_dataset.id,
-                "label": dti_real_dataset.label,
-                "summary": dti_real_dataset.summary,
-                "biology": dti_real_dataset.biology,
-                "scenarios": [
-                    {
-                        "id": o.scenario_id,
-                        "label": o.label,
-                        "file": o.file,
-                        "description": o.description,
-                    }
-                    for o in dti_real_outputs
-                ],
-            },
+            _dataset_entry(hd_dataset, hd_outputs, preferred_first="velocity_left"),
+            _dataset_entry(mb_dataset, mb_outputs),
+            _dataset_entry(h01_dataset, h01_outputs),
+            _dataset_entry(dti_real_dataset, dti_real_outputs),
         ],
     }
     manifest_path = out_dir / "manifest.json"
@@ -1119,7 +1620,7 @@ def main() -> None:
         json.dump(manifest, f, indent=2)
     print(f"\nwrote manifest: {manifest_path.relative_to(repo)}")
 
-    total = sum(o.size_kb for o in hd_outputs + mb_outputs + dti_real_outputs)
+    total = sum(o.size_kb for o in hd_outputs + mb_outputs + h01_outputs + dti_real_outputs)
     print(f"total payload size: {total / 1024:.2f} MiB")
 
 

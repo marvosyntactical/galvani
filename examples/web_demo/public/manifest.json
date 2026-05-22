@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "datasets": [
     {
       "id": "hd_ring",
@@ -8,46 +8,58 @@
       "biology": "The HD (head-direction) ring lives in the central complex (CX) of the fly's brain -- specifically the ellipsoid body (EB) and protocerebral bridge (PB). EPG neurons tile the EB and form a ring-attractor topology: a single localised bump of activity marks the fly's current heading. PEN cells inject angular-velocity input that shifts the bump when the fly turns. Delta7 neurons provide broad inhibition that stabilises the bump shape. The circuit was first characterised by Seelig & Jayaraman 2015 (Nature) and Kim et al. 2017 (Science). What you're seeing is rate-model activity (one number per neuron per timestep) on each neuron's EM-traced skeleton from the hemibrain dataset.",
       "scenarios": [
         {
+          "id": "velocity_left",
+          "label": "Velocity integration: left-PEN pulse",
+          "description": "Establish a bump, then pulse left-hemisphere PEN cells. The bump shifts in one direction -- this is the asymmetric loop that lets the fly integrate angular velocity.",
+          "models": {
+            "rate": "hd_ring_velocity_left.json",
+            "lif": "hd_ring_velocity_left_lif.json",
+            "adex": "hd_ring_velocity_left_adex.json",
+            "hh": "hd_ring_velocity_left_hh.json"
+          }
+        },
+        {
           "id": "tracking",
           "label": "Bump tracking",
-          "file": "hd_ring_tracking.json",
-          "description": "A rotating Gaussian stimulus (omega = 1 rad/s) drives the EB ring; the bump should follow the stimulus with a small phase lag. This is the canonical Kim et al. (2017) test."
+          "description": "A rotating Gaussian stimulus (omega = 1 rad/s) drives the EB ring; the bump should follow the stimulus with a small phase lag. This is the canonical Kim et al. (2017) test.",
+          "models": {
+            "rate": "hd_ring_tracking.json",
+            "lif": "hd_ring_tracking_lif.json",
+            "adex": "hd_ring_tracking_adex.json",
+            "hh": "hd_ring_tracking_hh.json"
+          }
         },
         {
           "id": "existence",
           "label": "Bump existence",
-          "file": "hd_ring_existence.json",
-          "description": "Stationary input centred at theta = pi/2. A localised bump should form at the input centre within ~100 ms."
+          "description": "Stationary input centred at theta = pi/2. A localised bump should form at the input centre within ~100 ms.",
+          "models": {
+            "rate": "hd_ring_existence.json"
+          }
         },
         {
           "id": "persistence",
           "label": "Bump persistence (stim then off)",
-          "file": "hd_ring_persistence.json",
-          "description": "Static stimulus for 300 ms then removed. Activity is sustained after the input goes away (the bump's amplitude persists, though its position drifts slightly toward a network attractor)."
-        },
-        {
-          "id": "velocity_left",
-          "label": "Velocity integration: left-PEN pulse",
-          "file": "hd_ring_velocity_left.json",
-          "description": "Establish a bump, then pulse left-hemisphere PEN cells. The bump shifts in one direction -- this is the asymmetric loop that lets the fly integrate angular velocity."
+          "description": "Static stimulus for 300 ms then removed. Activity is sustained after the input goes away (the bump's amplitude persists, though its position drifts slightly toward a network attractor).",
+          "models": {
+            "rate": "hd_ring_persistence.json"
+          }
         },
         {
           "id": "velocity_right",
           "label": "Velocity integration: right-PEN pulse",
-          "file": "hd_ring_velocity_right.json",
-          "description": "Same as the left-PEN scenario but pulsing right-hemisphere PEN cells. The bump should move in the opposite angular direction."
+          "description": "Same as the left-PEN scenario but pulsing right-hemisphere PEN cells. The bump should move in the opposite angular direction.",
+          "models": {
+            "rate": "hd_ring_velocity_right.json"
+          }
         },
         {
           "id": "story",
           "label": "A short HD story (6 s)",
-          "file": "hd_ring_story.json",
-          "description": "6-second composite scenario: brief stim east, free drift, brief stim west, free drift, L-PEN pulse, free drift again. Lets you see how the ring transitions between attractor states and how PEN cells inject angular velocity."
-        },
-        {
-          "id": "lif_tracking",
-          "label": "LIF spikes: rotating stim",
-          "file": "hd_ring_lif_tracking.json",
-          "description": "Same hemibrain HD ring, but simulated with a leaky integrate-and-fire model: neurons have voltages that spike when they cross threshold, are reset, and refract for 2 ms. Activity shown is instantaneous spike rate."
+          "description": "6-second composite scenario: brief stim east, free drift, brief stim west, free drift, L-PEN pulse, free drift again. Lets you see how the ring transitions between attractor states and how PEN cells inject angular velocity.",
+          "models": {
+            "rate": "hd_ring_story.json"
+          }
         }
       ]
     },
@@ -60,20 +72,50 @@
         {
           "id": "with_apl",
           "label": "Sparse coding (APL intact)",
-          "file": "mushroom_body_with_apl.json",
-          "description": "Drive 30% of Kenyon cells with constant input. APL pools KC activity and inhibits in return, producing k-WTA sparse coding: only a few percent of KCs remain active at steady state."
+          "description": "Drive 30% of Kenyon cells with constant input. APL pools KC activity and inhibits in return, producing k-WTA sparse coding: only a few percent of KCs remain active at steady state.",
+          "models": {
+            "rate": "mushroom_body_with_apl.json"
+          }
         },
         {
           "id": "without_apl",
           "label": "APL ablated (no inhibition)",
-          "file": "mushroom_body_without_apl.json",
-          "description": "Same input drive as the previous scenario, but APL's outgoing synapses are silenced. Without global inhibition, KC activity stays dense -- demonstrating APL's role in sparse coding."
+          "description": "Same input drive as the previous scenario, but APL's outgoing synapses are silenced. Without global inhibition, KC activity stays dense -- demonstrating APL's role in sparse coding.",
+          "models": {
+            "rate": "mushroom_body_without_apl.json"
+          }
         },
         {
           "id": "three_odors",
           "label": "Three odor presentations",
-          "file": "mushroom_body_three_odors.json",
-          "description": "Three distinct 'odor' patterns presented in sequence (each activates a different random ~30% of KCs). Between odors, activity decays back via APL inhibition. Shows how each odor recruits a distinct sparse subset."
+          "description": "Three distinct 'odor' patterns presented in sequence (each activates a different random ~30% of KCs). Between odors, activity decays back via APL inhibition. Shows how each odor recruits a distinct sparse subset.",
+          "models": {
+            "rate": "mushroom_body_three_odors.json"
+          }
+        }
+      ]
+    },
+    {
+      "id": "h01_style",
+      "label": "Human cortex microcircuit (H01-inspired)",
+      "summary": "60-neuron mammalian cortical microcircuit. Cell types and connection densities drawn from the H01 human-cortex EM paper.",
+      "biology": "Inspired by Shapson-Coe et al. 2024 (Science) -- the H01 dataset is ~1 mm\u00b3 of EM-traced human temporal cortex, ~50k cells. We don't ship the raw H01 data (it needs cloud-volume and a serious processing pipeline). Instead this circuit is a canonical microcircuit (Douglas & Martin 2004): three excitatory pyramidal populations (L2/3, L4 stellate, L5) plus three inhibitory interneuron classes (PV-basket, SST-Martinotti, VIP-bipolar) with H01-paper-derived connection densities. Critical mammalian-vs-fly difference: glutamate is EXCITATORY here (AMPA / NMDA), not inhibitory like in fly. The parameterizer uses `mammalian_default` NT signs. Full cloud-volume integration to pull the literal H01 cells is in BACKLOG.",
+      "scenarios": [
+        {
+          "id": "sensory_pulse",
+          "label": "L4 sensory pulse \u2192 cortical cascade",
+          "description": "Brief input to L4 stellate cells (the canonical sensory input layer), watch activity propagate L4 \u2192 L2/3 \u2192 L5. PV/SST interneurons shape the response.",
+          "models": {
+            "rate": "h01_sensory_pulse.json"
+          }
+        },
+        {
+          "id": "sustained_drive",
+          "label": "Sustained drive \u2192 steady state",
+          "description": "Constant input to L4. The network reaches an inhibition-stabilized steady state where excitation and inhibition balance each other -- the canonical cortical operating point.",
+          "models": {
+            "rate": "h01_sustained_drive.json"
+          }
         }
       ]
     },
@@ -86,14 +128,18 @@
         {
           "id": "visual_drive",
           "label": "Drive visual cortex \u2192 propagation",
-          "file": "dti_hcp_visual_drive.json",
-          "description": "REAL human DTI connectome (94 AAL2 regions, HCP subject NAP_001 via the neurolib dataset). Drive the visual-cortex regions; activity propagates into the rest of the brain through real white-matter streamline counts."
+          "description": "REAL human DTI connectome (94 AAL2 regions, HCP subject NAP_001 via the neurolib dataset). Drive the visual-cortex regions; activity propagates into the rest of the brain through real white-matter streamline counts.",
+          "models": {
+            "rate": "dti_hcp_visual_drive.json"
+          }
         },
         {
           "id": "region_walk",
           "label": "Frontal \u2192 Motor \u2192 Visual walk",
-          "file": "dti_hcp_region_walk.json",
-          "description": "Sequentially drive Frontal cortex (0-1 s), then primary Motor (1.5-2.5 s), then Visual (3-4 s). Lets you watch activity spread through the real white-matter network as the input target moves around the brain."
+          "description": "Sequentially drive Frontal cortex (0-1 s), then primary Motor (1.5-2.5 s), then Visual (3-4 s). Lets you watch activity spread through the real white-matter network as the input target moves around the brain.",
+          "models": {
+            "rate": "dti_hcp_region_walk.json"
+          }
         }
       ]
     }

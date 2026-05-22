@@ -8,6 +8,7 @@
 
 import { useMemo } from "react";
 import type { Payload } from "./payload";
+import type { ModelId } from "./payload";
 import { CELL_TYPE_INFO } from "./cellTypes";
 
 export interface ConnectedRequest {
@@ -21,6 +22,9 @@ export interface ConnectedRequest {
 interface Props {
   payload: Payload;
   neuronIndex: number;
+  /** Currently selected single-neuron model — determines which equations
+   *  the explainer renders. */
+  modelId: ModelId;
   frameDisplay: number;
   showConnected: boolean;
   connectedK: number;
@@ -33,6 +37,7 @@ interface Props {
 export function NeuronModelInfo({
   payload,
   neuronIndex,
+  modelId,
   frameDisplay,
   showConnected,
   connectedK,
@@ -50,7 +55,6 @@ export function NeuronModelInfo({
   ).model;
 
   const activation = payload.metadata.hyperparams.activation as string;
-  const isLIF = activation === "LIF";
 
   // Connectivity summary.
   const connectivity = useMemo(() => {
@@ -111,31 +115,37 @@ export function NeuronModelInfo({
 
   return (
     <div className="detail-sidebar">
-      <button className="back-btn" onClick={onClose}>
-        ← Back to full view
+      <button
+        className="drawer-close"
+        aria-label="Close detail view"
+        onClick={onClose}
+      >
+        ◀
       </button>
 
       {/* Show-neighbors control, top of the panel so it's discoverable */}
-      <div className="neighbors-control">
-        <label className="neighbors-toggle">
+      <div className="selector">
+        <label htmlFor="neighbors-switch">Neighbors</label>
+        <div className="toggle-row">
           <input
+            id="neighbors-switch"
             type="checkbox"
+            className="toggle-switch"
             checked={showConnected}
             onChange={(e) => onToggleConnected(e.target.checked)}
           />
-          <span>Show neighbors</span>
-        </label>
+          <span className="toggle-status">
+            {showConnected ? "showing top " + connectedK : "hidden"}
+          </span>
+        </div>
         {showConnected && (
-          <div className="neighbors-k">
-            <span className="k-label">top k = {connectedK}</span>
-            <input
-              type="range"
-              min={1}
-              max={15}
-              value={connectedK}
-              onChange={(e) => onChangeK(parseInt(e.target.value, 10))}
-            />
-          </div>
+          <input
+            type="range"
+            min={1}
+            max={15}
+            value={connectedK}
+            onChange={(e) => onChangeK(parseInt(e.target.value, 10))}
+          />
         )}
       </div>
 
@@ -167,7 +177,7 @@ export function NeuronModelInfo({
 
       <div className="detail-section">
         <h3>Single-neuron model</h3>
-        {isLIF ? <LIFExplainer /> : <RateExplainer activation={activation} />}
+        <ModelExplainer modelId={modelId} activation={activation} />
       </div>
 
       <div className="detail-section">
@@ -258,6 +268,26 @@ export function NeuronModelInfo({
   );
 }
 
+function ModelExplainer({
+  modelId,
+  activation,
+}: {
+  modelId: ModelId;
+  activation: string;
+}) {
+  switch (modelId) {
+    case "lif":
+      return <LIFExplainer />;
+    case "adex":
+      return <AdExExplainer />;
+    case "hh":
+      return <HHExplainer />;
+    case "rate":
+    default:
+      return <RateExplainer activation={activation} />;
+  }
+}
+
 function RateExplainer({ activation }: { activation: string }) {
   return (
     <>
@@ -287,12 +317,63 @@ function LIFExplainer() {
       </p>
       <pre className="model-eq">
         {"τ · dv/dt = -(v - v_rest) + R · (W · s + I + b)\n" +
-          "if v ≥ v_threshold: emit spike, v := v_reset (refractory)"}
+          "if v ≥ v_thr: emit spike, v := v_reset (refractory)"}
       </pre>
       <p>
         <code>s</code> is a per-neuron exponential synaptic-conductance trace
-        kicked up by each presynaptic spike (decay τ_syn = 5 ms). After
+        kicked up by each presynaptic spike (decay τ_syn ≈ 5 ms). After
         crossing threshold, the cell is silenced for ~2 ms (refractory).
+        The displayed rate r(t) is a spike-density estimate over a sliding
+        window.
+      </p>
+    </>
+  );
+}
+
+function AdExExplainer() {
+  return (
+    <>
+      <p>
+        Adaptive exponential integrate-and-fire (AdEx, Brette & Gerstner
+        2005). Voltage v plus a slow adaptation current w that drags the
+        cell back after firing — gives spike-frequency adaptation and
+        bursting.
+      </p>
+      <pre className="model-eq">
+        {"C · dv/dt = -g_L(v - E_L) + g_L·Δ_T·exp((v - v_T)/Δ_T)\n" +
+          "             + R·(W·s + I + b) - w\n" +
+          "τ_w · dw/dt = a(v - E_L) - w\n" +
+          "if v ≥ v_peak: v := v_reset, w := w + Δw"}
+      </pre>
+      <p>
+        The exponential term sharpens the spike onset; <code>w</code>{" "}
+        accumulates each spike (jump <code>Δw</code>) and decays with
+        timescale <code>τ_w</code> (~150 ms), suppressing further firing.
+      </p>
+    </>
+  );
+}
+
+function HHExplainer() {
+  return (
+    <>
+      <p>
+        Full Hodgkin-Huxley model. Spikes emerge from the interaction of
+        voltage-gated Na⁺ and K⁺ channels — no thresholding hack, no reset
+        rule. The state is <code>(v, m, h, n)</code>: voltage plus three
+        gating variables.
+      </p>
+      <pre className="model-eq">
+        {"C·dv/dt = -g_Na·m³·h(v - E_Na)\n" +
+          "          - g_K·n⁴(v - E_K)\n" +
+          "          - g_L(v - E_L) + I_syn + I_ext\n" +
+          "dx/dt = α_x(v)(1 - x) - β_x(v)·x   (x ∈ {m, h, n})"}
+      </pre>
+      <p>
+        <code>m</code> activates Na⁺ on depolarization (fast), <code>h</code>{" "}
+        inactivates it (slow), <code>n</code> activates K⁺ (recovery). The
+        spike shape, threshold, and refractory period are emergent. Costly
+        to simulate — ~10× slower than LIF.
       </p>
     </>
   );

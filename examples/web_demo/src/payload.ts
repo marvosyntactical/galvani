@@ -71,9 +71,21 @@ export interface Payload {
 export interface ManifestScenario {
   id: string;
   label: string;
-  file: string;
+  /** v2 legacy: single file. Optional now that v3 uses `models`. */
+  file?: string;
+  /** v3+: map of model_id -> JSON file. */
+  models?: Record<string, string>;
   description: string;
 }
+
+export type ModelId = "rate" | "lif" | "adex" | "hh";
+
+export const MODEL_LABELS: Record<ModelId, string> = {
+  rate: "Rate",
+  lif: "LIF",
+  adex: "AdEx",
+  hh: "HH",
+};
 
 export interface ManifestDataset {
   id: string;
