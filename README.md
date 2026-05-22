@@ -5,7 +5,7 @@
 <p align="center">
 A connectome to neural dynamics pipeline
 </p>
-<p>
+<p align="center">
  <a href="https://marvosyntactical.github.io/galvani">https://marvosyntactical.github.io/galvani</a>
  </p>
 <p align="center">
