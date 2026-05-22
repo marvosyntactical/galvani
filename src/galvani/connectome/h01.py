@@ -30,8 +30,10 @@ that needs `cloud-volume` plumbing.
 
 from __future__ import annotations
 
+import pickle
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -251,6 +253,202 @@ class H01StyleConnectome:
             (7, cx, cy, cz - r, 1.0, 1),
         ]
         return pd.DataFrame(rows, columns=["rowId", "x", "y", "z", "radius", "link"])
+
+
+# ============================================================================
+# H01 real-EM backend
+# ============================================================================
+#
+# Loads the cluster of ~90 cortical neurons cached by
+# `scripts/fetch_h01_real.py`. Same protocol surface as `H01StyleConnectome`
+# but with real morphology and real synapse-derived connectivity from the
+# Shapson-Coe et al. 2024 release on `gs://h01-release/data/20210601/`.
+
+
+@dataclass(frozen=True, slots=True)
+class _H01CachePaths:
+    neurons: str
+    connectivity: str
+    synapses: str
+    skeletons: str
+
+
+def _default_h01_cache_dir() -> Path:
+    """Repo-local cache populated by `scripts/fetch_h01_real.py`."""
+    return Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "h01_real"
+
+
+class H01EmConnectome:
+    """Real-EM H01 connectome backend.
+
+    Reads a precomputed cluster of ~50-150 cortical neurons + their
+    skeletons + their within-cluster connectivity from a local cache
+    directory. The cache is produced by `scripts/fetch_h01_real.py`,
+    which pulls from the public H01 release on GCS.
+
+    The skeletons are at full EM resolution (~5-15 k vertices per cell);
+    downstream code (the viz payload builder, the multi-compartment
+    solver) downsamples them on the fly.
+    """
+
+    DATASET_VERSION = "h01:gs://h01-release/data/20210601/ (Shapson-Coe et al. 2024)"
+
+    def __init__(
+        self,
+        cache_dir: Path | None = None,
+        nt_by_class: dict[str, str] | None = None,
+    ) -> None:
+        self._cache_dir = cache_dir or _default_h01_cache_dir()
+        if not self._cache_dir.exists():
+            raise FileNotFoundError(
+                f"H01 cache not found at {self._cache_dir}. "
+                "Run `uv run python scripts/fetch_h01_real.py` first."
+            )
+
+        nrn_df = pd.read_parquet(self._cache_dir / "neurons.parquet")
+        self._conn_df = pd.read_parquet(self._cache_dir / "connectivity.parquet")
+        self._syn_df = pd.read_parquet(self._cache_dir / "synapses.parquet")
+        with (self._cache_dir / "skeletons.pkl").open("rb") as f:
+            self._skeletons: dict[int, dict] = pickle.load(f)
+
+        # Class → neurotransmitter. Mammalian convention: pyramidal +
+        # spiny-stellate release glutamate; interneurons release GABA.
+        # Override via `nt_by_class` if needed.
+        nt_map = nt_by_class or {
+            "pyramidal": "glutamate",
+            "spiny_stellate": "glutamate",
+            "interneuron": "gaba",
+        }
+
+        # Soma position: take the first skeleton vertex (root). Skeletons
+        # store coordinates in nm — the same frame as `_NM` in the
+        # fetcher. We pass these through unchanged; the viz pipeline
+        # already normalises to a display bbox.
+        neurons: list[Neuron] = []
+        self._cell_types: dict[int, str] = {}
+        self._layers: dict[int, str] = {}
+        for _, row in nrn_df.iterrows():
+            sid = int(row["seg_id"])
+            broad = row["broad_class"]
+            layer = row["layer"]
+            cell_type = f"{broad}_{layer}"  # e.g. "pyramidal_L4"
+            self._cell_types[sid] = cell_type
+            self._layers[sid] = layer
+            soma_xyz = None
+            if sid in self._skeletons:
+                v0 = self._skeletons[sid]["vertices_nm"][0]
+                soma_xyz = (float(v0[0]), float(v0[1]), float(v0[2]))
+            neurons.append(
+                Neuron(
+                    id=sid,
+                    cell_type=cell_type,
+                    hemisphere="C",
+                    nt=nt_map.get(broad),
+                    soma_position=soma_xyz,
+                )
+            )
+        self._neurons: tuple[Neuron, ...] = tuple(neurons)
+        self.dataset_version = self.DATASET_VERSION
+
+    # -- Connectome protocol --
+    def query(
+        self,
+        *,
+        type: str | Iterable[str] | None = None,
+        ids: Iterable[int] | None = None,
+    ) -> tuple[Neuron, ...]:
+        if ids is not None:
+            wanted_ids = {int(i) for i in ids}
+            return tuple(n for n in self._neurons if n.id in wanted_ids)
+        if type is not None:
+            wanted_types: set[str] = {type} if isinstance(type, str) else set(type)
+            return tuple(n for n in self._neurons if n.cell_type in wanted_types)
+        return self._neurons
+
+    def subgraph(self, neurons: Iterable[Neuron]) -> Subgraph:
+        neurons = tuple(neurons)
+        wanted_ids = {n.id for n in neurons}
+
+        # Filter the cached (pre, post, count) table to the selected set.
+        df = self._conn_df
+        mask = df["pre"].isin(wanted_ids) & df["post"].isin(wanted_ids)
+        sub = df[mask]
+        pre_ids = sub["pre"].to_numpy(dtype=np.int64)
+        post_ids = sub["post"].to_numpy(dtype=np.int64)
+        counts = sub["count"].to_numpy(dtype=np.int32)
+        nt_by_id = {n.id: n.nt for n in self._neurons}
+        # Sign: prefer the per-synapse majority. If a (pre, post) pair has
+        # mostly excitatory synapses, treat as glutamate; otherwise gaba.
+        nt_pre: list[str | None] = []
+        for _, row in sub.iterrows():
+            pre = int(row["pre"])
+            base_nt = nt_by_id.get(pre)
+            # If the synapse-level annotations disagree with the cell-
+            # level NT, prefer the synapse-level call — it's per-bouton.
+            n_exc = int(row["n_excitatory"])
+            n_inh = int(row["n_inhibitory"])
+            if n_exc > n_inh:
+                nt_pre.append("glutamate")
+            elif n_inh > n_exc:
+                nt_pre.append("gaba")
+            else:
+                nt_pre.append(base_nt)
+
+        return Subgraph(
+            neurons=neurons,
+            pre_ids=pre_ids,
+            post_ids=post_ids,
+            counts=counts,
+            nt_pre=tuple(nt_pre),
+            dataset_version=self.dataset_version,
+        )
+
+    def fetch_skeleton(self, body_id: int) -> pd.DataFrame:
+        """Return the SWC-like skeleton for one cell as a DataFrame with
+        columns matching the hemibrain convention: rowId, x, y, z,
+        radius, link. Coordinates are in nm."""
+        sid = int(body_id)
+        if sid not in self._skeletons:
+            raise KeyError(f"H01 skeleton for {sid} not in cache.")
+        sk = self._skeletons[sid]
+        verts = np.asarray(sk["vertices_nm"], dtype=np.float32)
+        edges = np.asarray(sk["edges"], dtype=np.int32)
+        radii = np.asarray(sk["radii_nm"], dtype=np.float32)
+
+        # Build a parent-link array — for each vertex, the row id of its
+        # parent (-1 for the root). The skeleton edges are an unrooted
+        # graph; we root it at vertex 0 via a simple BFS.
+        N = len(verts)
+        adj: list[list[int]] = [[] for _ in range(N)]
+        for a, b in edges:
+            adj[int(a)].append(int(b))
+            adj[int(b)].append(int(a))
+        parent = np.full(N, -1, dtype=np.int64)
+        visited = np.zeros(N, dtype=bool)
+        # BFS from vertex 0.
+        queue = [0]
+        visited[0] = True
+        while queue:
+            i = queue.pop()
+            for j in adj[i]:
+                if not visited[j]:
+                    visited[j] = True
+                    parent[j] = i
+                    queue.append(j)
+        # rowId convention is 1-indexed in SWC; link points to rowId of
+        # parent (-1 for root).
+        row_ids = np.arange(1, N + 1, dtype=np.int64)
+        link = np.where(parent >= 0, parent + 1, -1)
+        return pd.DataFrame(
+            {
+                "rowId": row_ids,
+                "x": verts[:, 0],
+                "y": verts[:, 1],
+                "z": verts[:, 2],
+                "radius": radii,
+                "link": link,
+            }
+        )
 
 
 __all__ = ["H01_TYPES", "H01StyleConnectome", "synthetic_h01_microcircuit"]

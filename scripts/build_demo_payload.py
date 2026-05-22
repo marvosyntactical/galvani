@@ -28,7 +28,7 @@ from galvani.circuits.mushroom_body import MB_NT, load_mushroom_body
 from galvani.connectome.base import Subgraph
 from galvani.connectome.cache import ParquetCache
 from galvani.connectome.dti import DTIConnectome
-from galvani.connectome.h01 import H01StyleConnectome
+from galvani.connectome.h01 import H01EmConnectome, H01StyleConnectome
 from galvani.connectome.hemibrain import HD_RING_NT, HemibrainConnectome
 from galvani.model.adex import simulate_adex
 from galvani.model.hh import simulate_hh
@@ -1364,6 +1364,104 @@ def h01_scenarios():
     )
 
 
+# ---------------- H01 REAL EM (Shapson-Coe 2024) -----------------------------
+
+
+def h01_real_scenarios():
+    """Real-EM H01 cortical neighborhood scenarios.
+
+    A small cluster (~90 cells) extracted from the actual H01 release at
+    `gs://h01-release/data/20210601/` by `scripts/fetch_h01_real.py`. Real
+    skeletons (downsampled by the viz pipeline), real (pre, post, count)
+    edges from H01's synapse predictions. Connectivity is sparse — a
+    100×100×60 µm cluster has ~30 measured edges.
+    """
+    conn = H01EmConnectome()
+    neurons = conn.query()
+    subgraph = conn.subgraph(neurons)
+    n_neurons = len(neurons)
+
+    # Mammalian NT signs. Same parameterizer as the H01-inspired path,
+    # tuned for the smaller real-EM connectivity.
+    opts = ParameterizerOptions(
+        symmetrize=False,
+        global_gain=0.20,
+        weight_heuristic="log1p",
+        nt_to_sign=mammalian_default,
+    )
+    spec = default_parameterizer(subgraph, opts)
+
+    common_hp = {
+        "global_gain": 0.20,
+        "symmetrize": False,
+        "weight_heuristic": "log1p",
+        "nt_to_sign": "mammalian_default",
+        "activation": "tanh",
+        "dt_sim": 5e-4,
+        "tau_default_ms": 20.0,
+        "data_source": "H01 real EM, gs://h01-release/data/20210601/",
+        "cluster_extent_um": "200x200x120 (xy/z)",
+        "n_neurons": n_neurons,
+        "n_edges": int((subgraph.counts > 0).sum()),
+    }
+
+    # Drive the L4 pyramidals (largest population in this cluster). Real
+    # connectivity is sparse so a global excitation may not propagate
+    # very far — that's honest, that's what 30 edges among 90 cells
+    # gives you.
+    l4_indices = np.array([i for i, nn in enumerate(neurons) if "_L4" in nn.cell_type])
+    if len(l4_indices) == 0:
+        # Fallback: drive the first 10 pyramidals.
+        l4_indices = np.array(
+            [i for i, nn in enumerate(neurons) if "pyramidal" in nn.cell_type][:10]
+        )
+    pat_drive = np.zeros(n_neurons, dtype=np.float64)
+    pat_drive[l4_indices] = 1.0
+
+    def stim_pulse(t: float) -> np.ndarray:
+        return pat_drive if t < 0.15 else np.zeros(n_neurons)
+
+    result = simulate(spec, duration=1.0, stimulus=stim_pulse, activation=tanh, dt=5e-4)
+    yield (
+        ScenarioSpec(
+            id="l4_pulse",
+            label="L4 pulse (real H01 cluster)",
+            description=(
+                "150 ms pulse on the L4 pyramidal cells of a ~90-cell real "
+                "EM cluster from H01 (Shapson-Coe et al. 2024). Connectivity "
+                "is sparse — only what's actually measured in the volume."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result,
+            skeleton_provider=conn,
+            spec=spec,
+            dataset_id="h01_real",
+            scenario_id="l4_pulse",
+            scenario_label="L4 pulse · real H01",
+            description=(
+                "Real EM-traced neurons from a 200×200×120 µm slab of H01 "
+                "human temporal cortex. ~90 cells across L4 and L5 with the "
+                "actual synapse-predicted connectivity between them — most "
+                "pairs are unconnected because the cluster is small and "
+                "real cortex is sparse. A 150 ms excitatory pulse on the "
+                "L4 pyramidals propagates only as far as the measured "
+                "synapses allow."
+            ),
+            hyperparams={
+                **common_hp,
+                "stimulus": {"type": "L4_pulse", "amplitude": 1.0, "duration_s": 0.15},
+            },
+            stim_fn=stim_pulse,
+            stride=8,
+            min_radius=0.0,
+            n_frames=80,
+            target_scale=15.0,
+        ),
+    )
+
+
 # ---------------- Top-level driver -------------------------------------------
 
 
@@ -1524,6 +1622,56 @@ def main() -> None:
         )
         print(f"  {path.name}: {size_kb:.0f} KiB · model={model_id} · {scenario_spec.label}")
 
+    # ----- H01 REAL (Shapson-Coe et al. 2024 cluster) -----
+    h01_real_cache = repo / "tests" / "fixtures" / "h01_real"
+    h01_real_dataset = DatasetSpec(
+        id="h01_real",
+        label="Human cortex · H01 real EM (Shapson-Coe 2024)",
+        summary=(
+            "~90 EM-traced human cortical neurons pulled from the public H01 "
+            "release. A 200×200×120 µm slab across cortical L4 / L5."
+        ),
+        biology=(
+            "A real-EM neighborhood extracted from Shapson-Coe et al. 2024 "
+            "(Science) — the petascale H01 reconstruction of ~1 mm³ of "
+            "human temporal cortex. We pull a small spatial cluster of "
+            "well-typed neurons (pyramidal cells, interneurons, spiny "
+            "stellates) using their soma coordinates, fetch the pre-"
+            "computed sharded skeletons from `gs://h01-release/data/"
+            "20210601/c3/skeletons/`, and recover within-cluster "
+            "connectivity by intersecting the `pre_synaptic_cell` and "
+            "`post_synaptic_cell` indexes from H01's synapse-prediction "
+            "annotation layer. The result is the only real-EM human "
+            "neuron-level dataset shipped here. Connectivity is sparse — "
+            "real cortex is sparse at this spatial scale — and that's "
+            "honest: most pairs really are unconnected. The "
+            "parameterizer uses `mammalian_default` NT signs."
+        ),
+        scenarios=[],
+    )
+    h01_real_outputs: list[ScenarioOutput] = []
+    if h01_real_cache.exists():
+        print("\n[h01_real] real H01 cortical cluster")
+        for scenario_spec, payload in h01_real_scenarios():
+            model_id = _model_id_of(payload)
+            path = out_dir / _scenario_filename("h01_real", scenario_spec.id, model_id)
+            write_payload(payload, path)
+            size_kb = path.stat().st_size / 1024
+            h01_real_outputs.append(
+                ScenarioOutput(
+                    dataset_id="h01_real",
+                    scenario_id=scenario_spec.id,
+                    label=scenario_spec.label,
+                    file=path.name,
+                    description=scenario_spec.description,
+                    size_kb=size_kb,
+                    model_id=model_id,
+                )
+            )
+            print(f"  {path.name}: {size_kb:.0f} KiB · model={model_id} · {scenario_spec.label}")
+    else:
+        print(f"\n[h01_real] skipped: {h01_real_cache} not found (run scripts/fetch_h01_real.py)")
+
     # ----- Real DTI (HCP NAP_001 via neurolib, AAL2 parcellation) -----
     dti_real_path = repo / "tests" / "fixtures" / "dti_hcp" / "DTI_CM.mat"
     dti_real_dataset = DatasetSpec(
@@ -1612,6 +1760,7 @@ def main() -> None:
             _dataset_entry(hd_dataset, hd_outputs, preferred_first="velocity_left"),
             _dataset_entry(mb_dataset, mb_outputs),
             _dataset_entry(h01_dataset, h01_outputs),
+            _dataset_entry(h01_real_dataset, h01_real_outputs),
             _dataset_entry(dti_real_dataset, dti_real_outputs),
         ],
     }
@@ -1620,7 +1769,7 @@ def main() -> None:
         json.dump(manifest, f, indent=2)
     print(f"\nwrote manifest: {manifest_path.relative_to(repo)}")
 
-    total = sum(o.size_kb for o in hd_outputs + mb_outputs + h01_outputs + dti_real_outputs)
+    total = sum(o.size_kb for o in hd_outputs + mb_outputs + h01_outputs + h01_real_outputs + dti_real_outputs)
     print(f"total payload size: {total / 1024:.2f} MiB")
 
 

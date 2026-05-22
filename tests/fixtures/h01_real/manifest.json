@@ -1,0 +1,10 @@
+{
+  "source": "H01 (Shapson-Coe et al. 2024), gs://h01-release/data/20210601/",
+  "n_neurons": 89,
+  "n_connections": 28,
+  "voxel_resolution_nm": [
+    8.0,
+    8.0,
+    33.0
+  ]
+}

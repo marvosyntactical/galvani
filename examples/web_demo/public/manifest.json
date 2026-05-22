@@ -120,6 +120,22 @@
       ]
     },
     {
+      "id": "h01_real",
+      "label": "Human cortex \u00b7 H01 real EM (Shapson-Coe 2024)",
+      "summary": "~90 EM-traced human cortical neurons pulled from the public H01 release. A 200\u00d7200\u00d7120 \u00b5m slab across cortical L4 / L5.",
+      "biology": "A real-EM neighborhood extracted from Shapson-Coe et al. 2024 (Science) \u2014 the petascale H01 reconstruction of ~1 mm\u00b3 of human temporal cortex. We pull a small spatial cluster of well-typed neurons (pyramidal cells, interneurons, spiny stellates) using their soma coordinates, fetch the pre-computed sharded skeletons from `gs://h01-release/data/20210601/c3/skeletons/`, and recover within-cluster connectivity by intersecting the `pre_synaptic_cell` and `post_synaptic_cell` indexes from H01's synapse-prediction annotation layer. The result is the only real-EM human neuron-level dataset shipped here. Connectivity is sparse \u2014 real cortex is sparse at this spatial scale \u2014 and that's honest: most pairs really are unconnected. The parameterizer uses `mammalian_default` NT signs.",
+      "scenarios": [
+        {
+          "id": "l4_pulse",
+          "label": "L4 pulse (real H01 cluster)",
+          "description": "150 ms pulse on the L4 pyramidal cells of a ~90-cell real EM cluster from H01 (Shapson-Coe et al. 2024). Connectivity is sparse \u2014 only what's actually measured in the volume.",
+          "models": {
+            "rate": "h01_real_l4_pulse.json"
+          }
+        }
+      ]
+    },
+    {
       "id": "dti_hcp",
       "label": "Human DTI brain \u00b7 HCP NAP_001 (real)",
       "summary": "94-region human DTI connectome from a real diffusion-MRI scan (HCP subject NAP_001), parcelled with AAL2.",

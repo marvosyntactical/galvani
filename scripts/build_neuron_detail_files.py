@@ -202,6 +202,47 @@ def main() -> None:
         total += path.stat().st_size
     print(f"  wrote {len(mb_ids)} per-neuron files, total {total / 1024 / 1024:.2f} MiB")
 
+    # ----- H01 real EM cluster -----
+    h01_real_path = repo / "examples" / "web_demo" / "public" / "h01_real_l4_pulse.json"
+    if h01_real_path.exists():
+        from galvani.connectome.h01 import H01EmConnectome
+
+        with h01_real_path.open() as f:
+            h01_pl = json.load(f)
+        h01_bbox = h01_pl["bbox"]
+        h01_center = tuple(h01_bbox["center"])  # type: ignore[assignment]
+        h01_scale = float(h01_bbox["scale"])
+        h01_ids = [n["id"] for n in h01_pl["neurons"]]
+        print(
+            f"\n[h01_real] N={len(h01_ids)}  bbox center={h01_center}  scale={h01_scale:.5f}"
+        )
+
+        try:
+            conn_h01 = H01EmConnectome()
+        except FileNotFoundError as e:
+            print(f"  skip h01_real: {e}")
+        else:
+            h01_out = out_root / "h01_real"
+            h01_out.mkdir(parents=True, exist_ok=True)
+            total = 0
+            for body_id in h01_ids:
+                try:
+                    swc = conn_h01.fetch_skeleton(int(body_id))
+                except Exception as e:
+                    print(f"  skip {body_id}: {e}")
+                    continue
+                # Real H01 skeletons are ~6 k vertices per cell at ~100 nm
+                # node spacing. min_radius=200 nm keeps the gross
+                # morphology while dropping the finest noise.
+                data = _build_per_neuron(int(body_id), swc, h01_center, h01_scale, min_radius=200.0)  # type: ignore[arg-type]
+                path = h01_out / f"{int(body_id)}.json"
+                with path.open("w") as f:
+                    json.dump(data, f, separators=(",", ":"))
+                total += path.stat().st_size
+            print(
+                f"  wrote {len(h01_ids)} per-neuron files, total {total / 1024 / 1024:.2f} MiB"
+            )
+
 
 if __name__ == "__main__":
     main()
