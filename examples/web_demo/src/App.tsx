@@ -67,6 +67,12 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   // Single-open accordion: which infobox is currently expanded.
   const [openCard, setOpenCard] = useState<string | null>("overview");
+  // Whether the SNV drawer is currently visible. Decoupled from
+  // `selectedNeuronIndex` so the user can close the drawer (e.g. to see the
+  // full canvas) without leaving detail mode. Auto-opens on desktop when a
+  // neuron is selected; stays closed on mobile because the drawer would
+  // otherwise cover the entire viewport.
+  const [drawerOpen, setDrawerOpen] = useState(false);
   // Snapshot of the neuron-detail index that lags `selectedNeuronIndex` by
   // one frame during the close animation. Without it the drawer's content
   // would blank out the instant the user clicks the back arrow, making the
@@ -311,6 +317,19 @@ export default function App() {
     return () => window.clearTimeout(handle);
   }, [selectedNeuronIndex]);
 
+  // When the user enters or leaves detail mode, decide whether the drawer
+  // should be visible by default. On desktop the drawer fits alongside the
+  // canvas, so it auto-opens. On mobile a 360-px drawer covers the entire
+  // viewport, so we leave it closed and let the LHS overlay button open it.
+  useEffect(() => {
+    if (selectedNeuronIndex === null) {
+      setDrawerOpen(false);
+      return;
+    }
+    const isMobile = window.matchMedia("(max-width: 720px)").matches;
+    setDrawerOpen(!isMobile);
+  }, [selectedNeuronIndex]);
+
   // Fetch top-k incoming/outgoing companion details when the toggle is on.
   useEffect(() => {
     if (
@@ -537,11 +556,37 @@ export default function App() {
             input={hoveredStim}
           />
         )}
+        {selectedNeuronIndex !== null && (
+          <div
+            className={`detail-overlay-controls ${
+              drawerOpen ? "drawer-open" : ""
+            }`}
+          >
+            {!drawerOpen && (
+              <button
+                className="detail-overlay-btn"
+                onClick={() => setDrawerOpen(true)}
+                aria-label="Open neuron detail panel"
+                title="Open neuron detail panel"
+              >
+                ☰
+              </button>
+            )}
+            <button
+              className="detail-overlay-btn detail-overlay-exit"
+              onClick={() => setSelectedNeuronIndex(null)}
+              aria-label="Exit single-neuron view"
+              title="Exit single-neuron view"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       <aside
-        className={`detail-drawer ${selectedNeuronIndex !== null ? "open" : ""}`}
-        aria-hidden={selectedNeuronIndex === null}
+        className={`detail-drawer ${drawerOpen ? "open" : ""}`}
+        aria-hidden={!drawerOpen}
       >
         {payload && drawerIndex !== null && (
           <NeuronModelInfo
@@ -553,7 +598,7 @@ export default function App() {
             connectedK={connectedK}
             onToggleConnected={setShowConnected}
             onChangeK={setConnectedK}
-            onClose={() => setSelectedNeuronIndex(null)}
+            onClose={() => setDrawerOpen(false)}
           />
         )}
       </aside>
@@ -935,7 +980,7 @@ export default function App() {
 
       <div
         className={`controls ${controlsVisible ? "visible" : "hidden"} ${
-          selectedNeuronIndex !== null ? "snv-open" : ""
+          drawerOpen ? "snv-open" : ""
         }`}
         onMouseEnter={() => {
           controlsHoldRef.current = true;
