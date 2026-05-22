@@ -100,7 +100,6 @@ body {
   font-weight: 400;
   font-family: ui-monospace, SFMono-Regular, monospace;
   letter-spacing: 0;
-  color: var(--muted);
   opacity: 0.55;
   margin-left: 10px;
   vertical-align: baseline;

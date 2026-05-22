@@ -575,12 +575,12 @@ export default function App() {
         <Infobox id="overview" title="Overview" openId={openCard} onToggle={setOpenCard}>
           <p>
             You're watching simulated neural activity on real
-            neurons as they react to a given stimulus. Each neuron brightens and
-            dims as it's firing rate changes over time.
+            neurons as they react to an artificial stimulus. Each neuron brightens and
+            dims as its firing rate changes over time, while its color indicates its cell type.
           </p>
           <p>
-            The starting view shows the logic of a fruit fly's
-            head-direction system play out, but in the <strong>Menu</strong>{" "}
+            The initial simulation is of the logic of a fruit fly's
+            head-direction system, but in the <strong>Menu</strong>{" "}
             you can pick different{" "} <strong>circuits</strong>{" "}
              (mushroom body, human cortex,
             whole-brain MRI tractography), <strong>stimuli</strong>{" "}
@@ -833,29 +833,6 @@ export default function App() {
               <span className="k">frames</span>
               <span className="v">{payload.metadata.n_frames}</span>
             </div>
-            <p style={{ marginTop: 10 }}>
-              <strong>How to read the viz:</strong>
-            </p>
-            <ul className="legend-list" style={{ marginTop: 4 }}>
-              <li>
-                <span className="swatch" style={{ background: "#58a6ff" }} />
-                Neuron <strong>color</strong> = cell type hue, brightness =
-                firing rate at the current frame.
-              </li>
-              <li>
-                <span className="swatch" style={{ background: "#ff5cb0" }} />
-                <strong>Magenta tint</strong> on a neuron = it is receiving
-                non-zero external input at this frame.
-              </li>
-              <li>
-                <span
-                  className="swatch"
-                  style={{ background: "transparent", border: "1px dashed #58a6ff" }}
-                />
-                Click any neuron to enter <strong>detail mode</strong> and see
-                its full SWC morphology + single-neuron model.
-              </li>
-            </ul>
             <p style={{ marginTop: 10 }}>
               <strong>About the external input:</strong>{" "}
               {dataset.id === "hd_ring"
