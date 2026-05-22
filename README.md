@@ -1,10 +1,13 @@
 <p align="center">
   <img src="ico/icon.png" alt="Galvani" width="140">
 </p>
-
 <h1 align="center">GALVANI</h1>
 
-**A connectome → executable neural model pipeline.** Galvani takes a subgraph of a published connectome (fly hemibrain, human DTI, H01-style cortical microcircuits) and returns a runnable simulation — rate model, LIF, AdEx, or Hodgkin-Huxley — with biologically reasonable default parameters.
+<p align="center">
+  <img src="video/galvani_demo.gif" alt="Galvani web demo" width="720">
+</p>
+
+**A connectome to neural dynamics pipeline.** Galvani takes a subgraph of a published connectome (fly hemibrain, human DTI, H01-style cortical microcircuits) and returns a runnable simulation — rate model, LIF, AdEx, or Hodgkin-Huxley — with biologically reasonable default parameters.
 
 **Live demo:** [marvosyntactical.github.io/galvani](https://marvosyntactical.github.io/galvani)
 
@@ -16,7 +19,7 @@ Drag, zoom, click neurons. Switch between four levels of biophysical detail. The
 
 There's a small but growing body of work that takes a connectome and builds a working neural model from it: Duan, Dong & Fiete (2025) for the fly head-direction ring, Lappalainen et al. (2024) for the optic lobe, Shiu et al. (2024) for the central complex, Pospisil et al. (2024) for the mushroom body. Every paper writes its own bespoke pipeline. None share code. The parameterization heuristics — synapse counts to weights, transmitter to sign, cell type to time constant — sit in supplementary methods sections.
 
-Galvani is the pipeline pulled out of those papers and put behind one API.
+Galvani is a pipeline contructed to mimick these papers and put behind one API.
 
 ```python
 from galvani import HemibrainConnectome, default_parameterizer, simulate
