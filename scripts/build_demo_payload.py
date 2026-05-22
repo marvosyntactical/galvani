@@ -572,83 +572,6 @@ def lif_hd_ring_scenarios(subgraph, angles, n_neurons, neuron_ids):
     _ = n_total, neuron_ids  # silence unused (kept for signature parity)
 
 
-# ---------------- DTI (synthetic brain) scenarios ----------------------------
-
-
-def dti_scenarios():
-    """Region-level rate dynamics on a synthetic DTI matrix."""
-    conn = DTIConnectome.synthetic(n_regions=30, seed=0)
-    neurons = conn.query()
-    subgraph = conn.subgraph(neurons)
-    # Region-level defaults: no NT signs (DTI is unsigned), tau = 100 ms,
-    # symmetrize since DTI matrices are already symmetric.
-    opts = ParameterizerOptions(symmetrize=True, global_gain=0.001, weight_heuristic="log1p")
-    spec = default_parameterizer(subgraph, opts)
-    # Override tau to a region-appropriate 100 ms (slower than single neurons).
-    import dataclasses as _dc
-
-    spec = _dc.replace(spec, tau=np.full_like(spec.tau, 0.1))
-
-    n = len(neurons)
-    # Stimulus: drive one hemisphere first, then switch.
-    rng = np.random.default_rng(1)
-    side_l = np.array([n_.hemisphere == "L" for n_ in neurons])
-    side_r = ~side_l
-    pattern_l = np.where(side_l, 0.5 + 0.1 * rng.normal(size=n), 0.0)
-    pattern_r = np.where(side_r, 0.5 + 0.1 * rng.normal(size=n), 0.0)
-
-    def stim(t):
-        return pattern_l if t < 1.0 else pattern_r
-
-    result = simulate(spec, duration=2.0, stimulus=stim, activation=tanh, dt=2e-3)
-    yield (
-        ScenarioSpec(
-            id="hemispheric_drive",
-            label="Hemispheric drive switch",
-            description=(
-                "30-region synthetic DTI brain. Drive the left hemisphere "
-                "for 1 second, then switch to the right. Activity propagates "
-                "across the inter-hemispheric connections."
-            ),
-        ),
-        build_payload(
-            subgraph,
-            result,
-            skeleton_provider=conn,
-            spec=spec,
-            dataset_id="dti_synthetic",
-            scenario_id="hemispheric_drive",
-            scenario_label="Hemispheric drive switch",
-            description=(
-                "Synthetic DTI connectome (30 regions, 15 per hemisphere) "
-                "with biologically-plausible motifs: log-normal weight "
-                "distribution, intra-hemisphere bias, homotopic-pair "
-                "callosal boosts. Drive the L hemisphere for 1 s, then R. "
-                "Watch activity propagate across the synthetic connectome."
-            ),
-            hyperparams={
-                "global_gain": 0.001,
-                "symmetrize": True,
-                "weight_heuristic": "log1p",
-                "activation": "tanh",
-                "dt_sim": 2e-3,
-                "tau_default_ms": 100.0,
-                "n_regions": 30,
-                "stimulus": {
-                    "type": "hemispheric_switch",
-                    "switch_at_s": 1.0,
-                    "amplitude": 0.5,
-                },
-            },
-            stim_fn=stim,
-            stride=1,
-            min_radius=0.0,
-            n_frames=80,
-            target_scale=20.0,
-        ),
-    )
-
-
 # ---------------- DTI (real HCP/AAL2 data) -----------------------------------
 
 
@@ -857,49 +780,6 @@ def main() -> None:
         )
         print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
 
-    # ----- DTI synthetic -----
-    print("\n[dti_synthetic]")
-    dti_dataset = DatasetSpec(
-        id="dti_synthetic",
-        label="Synthetic DTI brain (30 regions)",
-        summary=(
-            "Region-level connectome via diffusion-MRI tractography. "
-            "Each 'neuron' is one cortical parcel; weights are streamline counts."
-        ),
-        biology=(
-            "Diffusion-tensor imaging (DTI) infers white-matter fiber tracts "
-            "in living human / macaque brains by measuring water diffusion "
-            "direction on MRI. The resulting 'tractography' yields a "
-            "connectivity matrix between cortical parcels -- a connectome "
-            "at *region* resolution, not single neurons. The same Galvani "
-            "pipeline runs on it: Subgraph -> Parameterizer -> Simulator, "
-            "unchanged. This synthetic example mimics canonical DTI motifs: "
-            "log-normal streamline counts, dense intra-hemispheric "
-            "connectivity, sparser inter-hemispheric connectivity with a "
-            "strong 'homotopic' boost between mirror-image regions (the "
-            "callosal connections in real brains). Region nodes are rendered "
-            "as small 6-spoked stars at their centroids since DTI parcels "
-            "don't have skeleton morphology like single neurons."
-        ),
-        scenarios=[],
-    )
-    dti_outputs: list[ScenarioOutput] = []
-    for scenario_spec, payload in dti_scenarios():
-        path = out_dir / f"dti_{scenario_spec.id}.json"
-        write_payload(payload, path)
-        size_kb = path.stat().st_size / 1024
-        dti_outputs.append(
-            ScenarioOutput(
-                dataset_id="dti_synthetic",
-                scenario_id=scenario_spec.id,
-                label=scenario_spec.label,
-                file=path.name,
-                description=scenario_spec.description,
-                size_kb=size_kb,
-            )
-        )
-        print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
-
     # ----- Real DTI (HCP NAP_001 via neurolib, AAL2 parcellation) -----
     dti_real_path = repo / "tests" / "fixtures" / "dti_hcp" / "DTI_CM.mat"
     dti_real_dataset = DatasetSpec(
@@ -980,21 +860,6 @@ def main() -> None:
                 ],
             },
             {
-                "id": dti_dataset.id,
-                "label": dti_dataset.label,
-                "summary": dti_dataset.summary,
-                "biology": dti_dataset.biology,
-                "scenarios": [
-                    {
-                        "id": o.scenario_id,
-                        "label": o.label,
-                        "file": o.file,
-                        "description": o.description,
-                    }
-                    for o in dti_outputs
-                ],
-            },
-            {
                 "id": dti_real_dataset.id,
                 "label": dti_real_dataset.label,
                 "summary": dti_real_dataset.summary,
@@ -1016,7 +881,7 @@ def main() -> None:
         json.dump(manifest, f, indent=2)
     print(f"\nwrote manifest: {manifest_path.relative_to(repo)}")
 
-    total = sum(o.size_kb for o in hd_outputs + mb_outputs + dti_outputs + dti_real_outputs)
+    total = sum(o.size_kb for o in hd_outputs + mb_outputs + dti_real_outputs)
     print(f"total payload size: {total / 1024:.2f} MiB")
 
 

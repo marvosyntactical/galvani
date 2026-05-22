@@ -1,0 +1,379 @@
+/**
+ * Per-neuron explainer + connected-neurons control panel for detail mode.
+ *
+ * Owns the "show top-k connected neurons" toggle. When enabled it asks
+ * App for the relevant per-neuron detail files (via the onConnectedKChange
+ * callback) and reports the lookup table back via props.
+ */
+
+import { useMemo } from "react";
+import type { Payload } from "./payload";
+import { CELL_TYPE_INFO } from "./cellTypes";
+
+export interface ConnectedRequest {
+  /** Top-k incoming and outgoing neuron indices to fetch and render. */
+  incoming: number[];
+  outgoing: number[];
+  /** Indices that receive any stimulus input across the scenario. */
+  stimulus_inputs: Set<number>;
+}
+
+interface Props {
+  payload: Payload;
+  neuronIndex: number;
+  frameDisplay: number;
+  showConnected: boolean;
+  connectedK: number;
+  /** Resolved by parent from connectivity; we just display the legend. */
+  onToggleConnected: (next: boolean) => void;
+  onChangeK: (k: number) => void;
+  onClose: () => void;
+}
+
+export function NeuronModelInfo({
+  payload,
+  neuronIndex,
+  frameDisplay,
+  showConnected,
+  connectedK,
+  onToggleConnected,
+  onChangeK,
+  onClose,
+}: Props) {
+  const neuron = payload.neurons[neuronIndex];
+  const info = CELL_TYPE_INFO[neuron.cell_type];
+
+  const model = (
+    payload as Payload & {
+      model?: { weights: number[][]; tau: number[]; bias: number[]; global_gain: number };
+    }
+  ).model;
+
+  const activation = payload.metadata.hyperparams.activation as string;
+  const isLIF = activation === "LIF";
+
+  // Connectivity summary.
+  const connectivity = useMemo(() => {
+    if (!model) return null;
+    const N = model.weights.length;
+    const W = model.weights;
+    const gain = model.global_gain;
+    type Edge = { other: number; weight: number; sign: "+" | "−" };
+    const incoming: Edge[] = [];
+    const outgoing: Edge[] = [];
+    for (let j = 0; j < N; j++) {
+      const winFromJ = W[neuronIndex][j] * gain;
+      if (Math.abs(winFromJ) > 1e-6 && j !== neuronIndex) {
+        incoming.push({ other: j, weight: Math.abs(winFromJ), sign: winFromJ > 0 ? "+" : "−" });
+      }
+      const woutToJ = W[j][neuronIndex] * gain;
+      if (Math.abs(woutToJ) > 1e-6 && j !== neuronIndex) {
+        outgoing.push({ other: j, weight: Math.abs(woutToJ), sign: woutToJ > 0 ? "+" : "−" });
+      }
+    }
+    incoming.sort((a, b) => b.weight - a.weight);
+    outgoing.sort((a, b) => b.weight - a.weight);
+    return {
+      n_in: incoming.length,
+      n_out: outgoing.length,
+      top_in: incoming.slice(0, 5),
+      top_out: outgoing.slice(0, 5),
+    };
+  }, [model, neuronIndex]);
+
+  const t = Math.max(
+    0,
+    Math.min(payload.metadata.n_frames - 1, Math.round(frameDisplay)),
+  );
+  const liveRate = payload.rates[t]?.[neuronIndex] ?? 0;
+  const liveInput = payload.stim_signal?.[t]?.[neuronIndex];
+
+  const ratesForNeuron = useMemo(
+    () => payload.rates.map((row) => row[neuronIndex]),
+    [payload, neuronIndex],
+  );
+  const stimForNeuron = useMemo(
+    () =>
+      payload.stim_signal
+        ? payload.stim_signal.map((row) => row[neuronIndex])
+        : null,
+    [payload, neuronIndex],
+  );
+
+  // Is this neuron itself a stimulus input?
+  const isStimInput = useMemo(() => {
+    if (!payload.stim_signal) return false;
+    for (const row of payload.stim_signal) {
+      if (Math.abs(row[neuronIndex]) > 1e-4) return true;
+    }
+    return false;
+  }, [payload, neuronIndex]);
+
+  return (
+    <div className="detail-sidebar">
+      <button className="back-btn" onClick={onClose}>
+        ← Back to full view
+      </button>
+
+      <div className="detail-header">
+        <h2 style={{ color: `#${info?.baseColor.getHexString() ?? "ffffff"}` }}>
+          {info?.shortLabel ?? neuron.cell_type}
+          {isStimInput && (
+            <span
+              className="badge"
+              style={{ marginLeft: 8, background: "#ff5cb0", color: "white" }}
+            >
+              stim input
+            </span>
+          )}
+        </h2>
+        <div className="params-table" style={{ marginTop: 6 }}>
+          <span className="label">body_id</span>
+          <span className="value">{neuron.id}</span>
+          <span className="label">hemisphere</span>
+          <span className="value">{neuron.hemisphere ?? "—"}</span>
+          {neuron.nt && (
+            <>
+              <span className="label">NT</span>
+              <span className="value">{neuron.nt}</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="detail-section">
+        <h3>Cell biology</h3>
+        <p>{info?.blurb ?? "No description available for this cell type."}</p>
+      </div>
+
+      <div className="detail-section">
+        <h3>Single-neuron model</h3>
+        {isLIF ? <LIFExplainer /> : <RateExplainer activation={activation} />}
+      </div>
+
+      <div className="detail-section">
+        <h3>Live parameters</h3>
+        {model && (
+          <div className="params-table">
+            <span className="group-header">Per-neuron</span>
+            <span className="label">tau (τ)</span>
+            <span className="value">
+              {(model.tau[neuronIndex] * 1000).toFixed(1)} ms
+            </span>
+            <span className="label">bias (b)</span>
+            <span className="value">{model.bias[neuronIndex].toFixed(3)}</span>
+
+            <span className="group-header">Global</span>
+            <span className="label">gain</span>
+            <span className="value">{model.global_gain.toFixed(4)}</span>
+            <span className="label">activation</span>
+            <span className="value">{activation}</span>
+
+            <span className="group-header">At t = {payload.times[t]?.toFixed(3)}s</span>
+            <span className="label">rate r(t)</span>
+            <span className="value">{liveRate.toFixed(3)}</span>
+            {liveInput !== undefined && (
+              <>
+                <span className="label">input I(t)</span>
+                <span className="value">{liveInput.toFixed(3)}</span>
+              </>
+            )}
+          </div>
+        )}
+        <p style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
+          τ and bias come from the parameterizer's per-cell-type defaults;
+          gain is the global multiplier set per scenario.
+        </p>
+      </div>
+
+      <div className="detail-section">
+        <h3>Activity over time</h3>
+        <MiniTrace
+          rates={ratesForNeuron}
+          stim={stimForNeuron}
+          currentFrame={t}
+        />
+        <div className="legend-mini">
+          <span className="dot dot-rate" /> firing rate &nbsp;
+          {stimForNeuron && (
+            <>
+              <span className="dot dot-stim" /> external input
+            </>
+          )}
+        </div>
+      </div>
+
+      {connectivity && (
+        <div className="detail-section">
+          <h3>Connected neurons</h3>
+          <div className="connected-controls">
+            <label>
+              <input
+                type="checkbox"
+                checked={showConnected}
+                onChange={(e) => onToggleConnected(e.target.checked)}
+              />
+              Show top-k connected
+            </label>
+          </div>
+          {showConnected && (
+            <>
+              <div className="connected-controls">
+                <span className="k-label">k = {connectedK}</span>
+                <input
+                  type="range"
+                  min={1}
+                  max={Math.min(15, Math.min(connectivity.n_in, connectivity.n_out))}
+                  value={connectedK}
+                  onChange={(e) => onChangeK(parseInt(e.target.value, 10))}
+                />
+              </div>
+              <div className="connected-legend">
+                <div className="row">
+                  <span className="dot dot-focus" /> focused
+                </div>
+                <div className="row">
+                  <span className="dot dot-in" /> incoming (→ this)
+                </div>
+                <div className="row">
+                  <span className="dot dot-out" /> outgoing (← this)
+                </div>
+                <div className="row">
+                  <span className="dot dot-stim" /> stim input
+                </div>
+              </div>
+              <p style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+                Brightness still encodes firing rate; opacity reduced on
+                companions. Loading each companion fetches one ~300 KB
+                skeleton file.
+              </p>
+            </>
+          )}
+          <div className="params-table" style={{ marginTop: 10 }}>
+            <span className="label">incoming edges</span>
+            <span className="value">{connectivity.n_in}</span>
+            <span className="label">outgoing edges</span>
+            <span className="value">{connectivity.n_out}</span>
+          </div>
+          {connectivity.top_in.length > 0 && (
+            <>
+              <p style={{ marginTop: 8, marginBottom: 4 }}>
+                <strong>Top 5 incoming</strong> (weight × gain):
+              </p>
+              <ul className="conn-list">
+                {connectivity.top_in.map((e, k) => {
+                  const other = payload.neurons[e.other];
+                  return (
+                    <li key={k}>
+                      <code>
+                        {e.sign}
+                        {e.weight.toFixed(3)}
+                      </code>{" "}
+                      from {other.cell_type} #{other.id}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RateExplainer({ activation }: { activation: string }) {
+  return (
+    <>
+      <p>
+        Rate-model neuron. The state is a single scalar firing rate{" "}
+        <code>r(t)</code>; spike timing is not modeled.
+      </p>
+      <pre className="model-eq">
+        {"τ · dr/dt = -r + " + activation + "(W · r + I + b)"}
+      </pre>
+      <p>
+        At each timestep, the neuron sums weighted input from upstream cells
+        (the W · r term), adds external input I(t) and a bias b, applies the
+        nonlinearity <code>{activation}</code>, and integrates toward that
+        value on a timescale of <code>τ</code> (10-20 ms).
+      </p>
+    </>
+  );
+}
+
+function LIFExplainer() {
+  return (
+    <>
+      <p>
+        Leaky integrate-and-fire (LIF) biophysical model. The state is a
+        membrane voltage <code>v(t)</code>; spikes are discrete events.
+      </p>
+      <pre className="model-eq">
+        {"τ · dv/dt = -(v - v_rest) + R · (W · s + I + b)\n" +
+          "if v ≥ v_threshold: emit spike, v := v_reset (refractory)"}
+      </pre>
+      <p>
+        <code>s</code> is a per-neuron exponential synaptic-conductance trace
+        kicked up by each presynaptic spike (decay τ_syn = 5 ms). After
+        crossing threshold, the cell is silenced for ~2 ms (refractory).
+      </p>
+    </>
+  );
+}
+
+function MiniTrace({
+  rates,
+  stim,
+  currentFrame,
+}: {
+  rates: number[];
+  stim: number[] | null;
+  currentFrame: number;
+}) {
+  const W = 280;
+  const H = 60;
+  const N = rates.length;
+  const rmax = Math.max(...rates, 0.01);
+  const smax = stim ? Math.max(...stim, 0.01) : 1;
+  const x = (i: number) => (W * i) / Math.max(1, N - 1);
+  const yr = (v: number) => H - (H * v) / rmax;
+  const ys = (v: number) => H - (H * v) / smax;
+  const ratePath = rates
+    .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${yr(v).toFixed(1)}`)
+    .join(" ");
+  const stimPath = stim
+    ? stim
+        .map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${ys(v).toFixed(1)}`)
+        .join(" ")
+    : "";
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      width="100%"
+      height={H}
+      style={{ background: "rgba(255,255,255,0.03)", borderRadius: 4 }}
+    >
+      {stim && (
+        <path
+          d={stimPath}
+          fill="none"
+          stroke="#ff5cb0"
+          strokeWidth={1.2}
+          opacity={0.8}
+        />
+      )}
+      <path d={ratePath} fill="none" stroke="#58a6ff" strokeWidth={1.5} />
+      <line
+        x1={x(currentFrame)}
+        x2={x(currentFrame)}
+        y1={0}
+        y2={H}
+        stroke="#ffffff"
+        strokeOpacity={0.5}
+        strokeWidth={1}
+      />
+    </svg>
+  );
+}

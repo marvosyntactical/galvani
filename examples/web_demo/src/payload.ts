@@ -5,6 +5,8 @@ export interface PayloadNeuron {
   cell_type: string;
   hemisphere: string | null;
   angle: number | null;
+  /** Predicted neurotransmitter (e.g. "acetylcholine"). Optional. */
+  nt?: string | null;
   soma: [number, number, number] | null;
   /** Flat (x0,y0,z0, x1,y1,z1, ...) line segments, normalised to ~10-unit cube. */
   segments: number[];

@@ -66,20 +66,6 @@
       ]
     },
     {
-      "id": "dti_synthetic",
-      "label": "Synthetic DTI brain (30 regions)",
-      "summary": "Region-level connectome via diffusion-MRI tractography. Each 'neuron' is one cortical parcel; weights are streamline counts.",
-      "biology": "Diffusion-tensor imaging (DTI) infers white-matter fiber tracts in living human / macaque brains by measuring water diffusion direction on MRI. The resulting 'tractography' yields a connectivity matrix between cortical parcels -- a connectome at *region* resolution, not single neurons. The same Galvani pipeline runs on it: Subgraph -> Parameterizer -> Simulator, unchanged. This synthetic example mimics canonical DTI motifs: log-normal streamline counts, dense intra-hemispheric connectivity, sparser inter-hemispheric connectivity with a strong 'homotopic' boost between mirror-image regions (the callosal connections in real brains). Region nodes are rendered as small 6-spoked stars at their centroids since DTI parcels don't have skeleton morphology like single neurons.",
-      "scenarios": [
-        {
-          "id": "hemispheric_drive",
-          "label": "Hemispheric drive switch",
-          "file": "dti_hemispheric_drive.json",
-          "description": "30-region synthetic DTI brain. Drive the left hemisphere for 1 second, then switch to the right. Activity propagates across the inter-hemispheric connections."
-        }
-      ]
-    },
-    {
       "id": "dti_hcp",
       "label": "Human DTI brain \u00b7 HCP NAP_001 (real)",
       "summary": "94-region human DTI connectome from a real diffusion-MRI scan (HCP subject NAP_001), parcelled with AAL2.",

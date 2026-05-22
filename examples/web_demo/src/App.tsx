@@ -15,6 +15,10 @@ import { RingScene, type HoverInfo, type RenderMode } from "./RingScene";
 import { UploadButton } from "./UploadButton";
 import { canResim, resimulateWithGain } from "./resim";
 import { Dropdown } from "./Dropdown";
+import { DetailScene, type CompanionNeuron } from "./DetailScene";
+import { NeuronModelInfo } from "./NeuronModelInfo";
+import { HelpPopover } from "./HelpPopover";
+import { loadNeuronDetail, type NeuronDetail } from "./detailLoader";
 
 export default function App() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
@@ -44,6 +48,18 @@ export default function App() {
   const [customPayload, setCustomPayload] = useState<{ p: Payload; name: string } | null>(
     null,
   );
+  // Detail mode: when set, the canvas shows only one neuron at full SWC
+  // morphology, and the sidebar swaps to a per-neuron explainer.
+  const [selectedNeuronIndex, setSelectedNeuronIndex] = useState<number | null>(null);
+  const [detail, setDetail] = useState<NeuronDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  // Connected-neurons state.
+  const [showConnected, setShowConnected] = useState(false);
+  const [connectedK, setConnectedK] = useState(5);
+  const [companions, setCompanions] = useState<CompanionNeuron[]>([]);
+  const [companionsLoading, setCompanionsLoading] = useState(false);
+  // Mobile: collapse the sidebar by default and let a hamburger toggle it.
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const rafRef = useRef<number | null>(null);
   const lastTickRef = useRef<number>(performance.now());
@@ -166,6 +182,137 @@ export default function App() {
     return () => clearInterval(id);
   }, [payload]);
 
+  // Reset connected-neurons state whenever the user enters detail mode or
+  // changes the focused neuron.
+  useEffect(() => {
+    setCompanions([]);
+    setShowConnected(false);
+  }, [selectedNeuronIndex]);
+
+  // Fetch top-k incoming/outgoing companion details when the toggle is on.
+  useEffect(() => {
+    if (
+      !showConnected ||
+      !payload ||
+      selectedNeuronIndex === null ||
+      !(payload as Payload & { model?: { weights: number[][] } }).model
+    ) {
+      setCompanions([]);
+      return;
+    }
+    const model = (payload as Payload & {
+      model: { weights: number[][]; global_gain: number };
+    }).model;
+    const W = model.weights;
+    const N = W.length;
+    const incoming: Array<{ idx: number; w: number }> = [];
+    const outgoing: Array<{ idx: number; w: number }> = [];
+    for (let j = 0; j < N; j++) {
+      if (j === selectedNeuronIndex) continue;
+      const wIn = Math.abs(W[selectedNeuronIndex][j]);
+      const wOut = Math.abs(W[j][selectedNeuronIndex]);
+      if (wIn > 0) incoming.push({ idx: j, w: wIn });
+      if (wOut > 0) outgoing.push({ idx: j, w: wOut });
+    }
+    incoming.sort((a, b) => b.w - a.w);
+    outgoing.sort((a, b) => b.w - a.w);
+    const topIn = incoming.slice(0, connectedK).map((e) => e.idx);
+    const topOut = outgoing.slice(0, connectedK).map((e) => e.idx);
+
+    // Stimulus-input set: any neuron with non-zero stim across time.
+    const stimSet = new Set<number>();
+    if (payload.stim_signal) {
+      for (let i = 0; i < N; i++) {
+        for (const row of payload.stim_signal) {
+          if (Math.abs(row[i]) > 1e-4) {
+            stimSet.add(i);
+            break;
+          }
+        }
+      }
+    }
+
+    const baseUrl = import.meta.env.BASE_URL;
+    setCompanionsLoading(true);
+    let cancelled = false;
+    Promise.all([
+      ...topIn.map(async (idx) => {
+        const nrn = payload.neurons[idx];
+        const d = await loadNeuronDetail(
+          payload.metadata.dataset_id,
+          nrn.id,
+          baseUrl,
+        );
+        return {
+          detail: d,
+          neuronIndex: idx,
+          role: "incoming" as const,
+          isStimInput: stimSet.has(idx),
+        };
+      }),
+      ...topOut.map(async (idx) => {
+        const nrn = payload.neurons[idx];
+        const d = await loadNeuronDetail(
+          payload.metadata.dataset_id,
+          nrn.id,
+          baseUrl,
+        );
+        return {
+          detail: d,
+          neuronIndex: idx,
+          role: "outgoing" as const,
+          isStimInput: stimSet.has(idx),
+        };
+      }),
+    ])
+      .then((arr) => {
+        if (!cancelled) {
+          setCompanions(arr);
+          setCompanionsLoading(false);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          // eslint-disable-next-line no-console
+          console.error("Failed to load companions", e);
+          setCompanions([]);
+          setCompanionsLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showConnected, connectedK, selectedNeuronIndex, payload]);
+
+  // Detail mode: fetch the per-neuron skeleton file when the user clicks a
+  // neuron. We deliberately do not preload these -- only fetch on demand.
+  useEffect(() => {
+    if (selectedNeuronIndex === null || !payload) {
+      setDetail(null);
+      return;
+    }
+    const neuron = payload.neurons[selectedNeuronIndex];
+    const baseUrl = import.meta.env.BASE_URL;
+    setDetailLoading(true);
+    let cancelled = false;
+    loadNeuronDetail(payload.metadata.dataset_id, neuron.id, baseUrl)
+      .then((d) => {
+        if (!cancelled) {
+          setDetail(d);
+          setDetailLoading(false);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setErr(`Detail load failed for ${neuron.cell_type} #${neuron.id}: ${e}`);
+          setDetailLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedNeuronIndex, payload]);
+
   if (err) return <div className="loading">Error: {err}</div>;
   if (!manifest || !dataset) return <div className="loading">Loading manifest…</div>;
 
@@ -190,8 +337,18 @@ export default function App() {
       ? payload.stim_signal[currentFrame][hover.neuronIndex]
       : null;
 
+  const inDetailMode =
+    selectedNeuronIndex !== null && payload && (detail || detailLoading);
+
   return (
-    <div className="app">
+    <div className={`app ${sidebarOpen ? "sidebar-open" : "sidebar-closed"}`}>
+      <button
+        className="mobile-toggle"
+        aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+        onClick={() => setSidebarOpen((o) => !o)}
+      >
+        {sidebarOpen ? "✕" : "☰"}
+      </button>
       <div className="canvas-host">
         {payload && (
           <Canvas
@@ -204,17 +361,35 @@ export default function App() {
             <pointLight position={[10, 10, 10]} intensity={1.4} />
             <pointLight position={[-10, -5, -10]} intensity={0.4} />
             <OrbitControls makeDefault enableDamping />
-            <RingScene
-              payload={payload}
-              frameRef={frameRef}
-              renderMode={renderMode}
-              onHover={setHover}
-              hoveredIndex={hover?.neuronIndex ?? null}
-            />
+            {selectedNeuronIndex !== null && detail ? (
+              <DetailScene
+                detail={detail}
+                payload={payload}
+                neuronIndex={selectedNeuronIndex}
+                frameRef={frameRef}
+                companions={companions}
+              />
+            ) : (
+              <RingScene
+                payload={payload}
+                frameRef={frameRef}
+                renderMode={renderMode}
+                onHover={setHover}
+                hoveredIndex={hover?.neuronIndex ?? null}
+                // DTI parcels don't have real per-neuron morphology, so
+                // there's nothing to drill into. Only enable click for
+                // single-cell datasets.
+                onSelect={
+                  payload.metadata.dataset_id.startsWith("dti")
+                    ? undefined
+                    : (i) => setSelectedNeuronIndex(i)
+                }
+              />
+            )}
           </Canvas>
         )}
-        {payload && <Stats />}
-        {payload && (
+        {payload && !inDetailMode && <Stats />}
+        {payload && !inDetailMode && (
           <div className="overlay">
             <h2>{scenario?.label}</h2>
             <p className="subtitle">
@@ -222,6 +397,22 @@ export default function App() {
               {payload.metadata.duration.toFixed(2)}s · dt ={" "}
               {payload.metadata.dt_sim.toExponential(1)} s
             </p>
+            {!payload.metadata.dataset_id.startsWith("dti") && (
+              <p className="subtitle" style={{ marginTop: 6 }}>
+                💡 Click a neuron to see its morphology + model up close
+              </p>
+            )}
+          </div>
+        )}
+        {detailLoading && (
+          <div className="loading-overlay">Loading neuron morphology…</div>
+        )}
+        {companionsLoading && !detailLoading && (
+          <div
+            className="loading-overlay"
+            style={{ background: "rgba(11, 15, 23, 0.4)" }}
+          >
+            Loading {connectedK * 2} connected neurons…
           </div>
         )}
         {payloadLoading && (
@@ -230,7 +421,7 @@ export default function App() {
         {!payload && !payloadLoading && (
           <div className="loading-overlay">Pick a scenario from the right →</div>
         )}
-        {hover && hoveredNeuron && (
+        {hover && hoveredNeuron && !inDetailMode && (
           <Tooltip
             x={hover.screen.x}
             y={hover.screen.y}
@@ -243,7 +434,20 @@ export default function App() {
         )}
       </div>
 
-      <div className="sidebar">
+      <div className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
+        {inDetailMode && payload && selectedNeuronIndex !== null && detail ? (
+          <NeuronModelInfo
+            payload={payload}
+            neuronIndex={selectedNeuronIndex}
+            frameDisplay={displayFrame}
+            showConnected={showConnected}
+            connectedK={connectedK}
+            onToggleConnected={setShowConnected}
+            onChangeK={setConnectedK}
+            onClose={() => setSelectedNeuronIndex(null)}
+          />
+        ) : (
+        <>
         <div className="header-row">
           <h1>Galvani</h1>
           <span className="badge">v0.1</span>
@@ -324,7 +528,37 @@ export default function App() {
         )}
 
         <div className="selector">
-          <label>Custom data</label>
+          <label>
+            Custom data{" "}
+            <HelpPopover title="Upload format">
+              <p>
+                The file picker accepts a JSON in Galvani's payload schema v2.
+                Easiest way to make one: clone the repo, run{" "}
+                <code>uv run python scripts/build_demo_payload.py</code> with a
+                neuPrint token, and grab any file under{" "}
+                <code>examples/web_demo/public/</code>.
+              </p>
+              <p>
+                <strong>What's inside a payload:</strong> per-neuron 3D
+                skeletons (positions + radii), per-frame activation rates,
+                optional stimulus signal, and weight matrix metadata.
+                The weight matrix lets the in-browser live-gain slider work.
+              </p>
+              <p>
+                <strong>Sizing:</strong> 100 neurons × 100 frames is roughly
+                100 KB. 1 000 neurons × 100 frames is ~5 MB. The browser
+                fetches the whole file at scenario load, so target ≤10 MB
+                for snappy UX. Heavier scenarios can run but feel sluggish.
+              </p>
+              <p>
+                <strong>Other connectome sources to try:</strong>{" "}
+                <code>neuprint-python</code> (Janelia hemibrain / male-CNS /
+                MANC), <code>fafbseg-py</code> (FlyWire), or HCP/AAL DTI
+                matrices via <code>neurolib</code>. Each needs its own
+                loader; v1 ships hemibrain + DTI.
+              </p>
+            </HelpPopover>
+          </label>
           <UploadButton
             onLoad={(p, name) => setCustomPayload({ p, name })}
             onError={(msg) => setErr(msg)}
@@ -372,10 +606,7 @@ export default function App() {
               <span className="v">{payload.metadata.dataset_version}</span>
               <span className="k">neurons</span>
               <span className="v">{payload.metadata.n_neurons}</span>
-              <span className="k">scenario</span>
-              <span className="v">{payload.metadata.scenario_label}</span>
             </div>
-            <p style={{ marginTop: 10 }}>{payload.metadata.description}</p>
             <strong>Cell types in this view</strong>
             <ul className="legend-list">
               {typesInPayload.map((t) => {
@@ -392,11 +623,50 @@ export default function App() {
                 );
               })}
             </ul>
+          </Infobox>
+        )}
+
+        {payload && (
+          <Infobox title={`Scenario · ${payload.metadata.scenario_label}`}>
+            <p>{payload.metadata.description}</p>
+            <div className="kv">
+              <span className="k">duration</span>
+              <span className="v">
+                {payload.metadata.duration.toFixed(2)} s
+              </span>
+              <span className="k">frames</span>
+              <span className="v">{payload.metadata.n_frames}</span>
+            </div>
             <p style={{ marginTop: 10 }}>
-              <strong>External input (magenta tint):</strong>{" "}
+              <strong>How to read the viz:</strong>
+            </p>
+            <ul className="legend-list" style={{ marginTop: 4 }}>
+              <li>
+                <span className="swatch" style={{ background: "#58a6ff" }} />
+                Neuron <strong>color</strong> = cell type hue, brightness =
+                firing rate at the current frame.
+              </li>
+              <li>
+                <span className="swatch" style={{ background: "#ff5cb0" }} />
+                <strong>Magenta tint</strong> on a neuron = it is receiving
+                non-zero external input at this frame.
+              </li>
+              <li>
+                <span
+                  className="swatch"
+                  style={{ background: "transparent", border: "1px dashed #58a6ff" }}
+                />
+                Click any neuron to enter <strong>detail mode</strong> and see
+                its full SWC morphology + single-neuron model.
+              </li>
+            </ul>
+            <p style={{ marginTop: 10 }}>
+              <strong>About the external input:</strong>{" "}
               {dataset.id === "hd_ring"
-                ? "represents heading-related drive from upstream visual / landmark / vestibular cues that the fly is currently sensing. In the velocity-integration scenarios this stands in for the angular velocity signal carried by the L or R PEN cells."
-                : "represents projection-neuron drive from the antennal lobe — i.e. the odor the fly is currently smelling. We drive ~30% of KCs to model a broad odor response."}
+                ? "represents heading-related drive from upstream visual / landmark / vestibular cues. In the velocity-integration scenarios it stands in for angular-velocity signal carried by the L or R PEN cells."
+                : dataset.id === "mushroom_body"
+                  ? "represents projection-neuron drive from the antennal lobe — i.e. the odor the fly is currently smelling. We drive ~30% of KCs to model a broad odor response."
+                  : "represents externally-applied drive on the chosen subset of regions (e.g. visual cortex). Activity propagates through the streamline-count matrix to the rest of the brain."}
             </p>
           </Infobox>
         )}
@@ -429,6 +699,8 @@ export default function App() {
               for the full record.
             </p>
           </Infobox>
+        )}
+        </>
         )}
       </div>
 
@@ -464,9 +736,11 @@ export default function App() {
         <Dropdown<number>
           value={speed}
           options={[
+            { value: 0.05, label: "0.05× (very slow)" },
+            { value: 0.1, label: "0.1×" },
             { value: 0.25, label: "0.25×" },
             { value: 0.5, label: "0.5×" },
-            { value: 1.0, label: "1×" },
+            { value: 1.0, label: "1× (real time)" },
             { value: 2.0, label: "2×" },
             { value: 4.0, label: "4×" },
           ]}

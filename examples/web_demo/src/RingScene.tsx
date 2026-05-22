@@ -23,6 +23,7 @@ interface Props {
   lineWidth?: number;
   onHover?: (info: HoverInfo | null) => void;
   hoveredIndex?: number | null;
+  onSelect?: (neuronIndex: number) => void;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -74,6 +75,7 @@ interface NeuronProps {
   lineWidth: number;
   onPointerOver?: (e: { clientX: number; clientY: number }) => void;
   onPointerOut?: () => void;
+  onClick?: () => void;
   isHovered: boolean;
 }
 
@@ -84,6 +86,7 @@ function NeuronLine({
   lineWidth,
   onPointerOver,
   onPointerOut,
+  onClick,
   isHovered,
 }: NeuronProps) {
   const points = useMemo(() => pointsFromFlat(neuron.segments), [neuron.segments]);
@@ -100,6 +103,10 @@ function NeuronLine({
         onPointerOver?.(e);
       }}
       onPointerOut={onPointerOut}
+      onClick={(e: { stopPropagation?: () => void }) => {
+        e.stopPropagation?.();
+        onClick?.();
+      }}
       ref={(el) => {
         registerRef(index, el ? (el as unknown as ColorBearer) : null);
       }}
@@ -114,6 +121,7 @@ function NeuronTubes({
   registerRef,
   onPointerOver,
   onPointerOut,
+  onClick,
   isHovered,
 }: NeuronProps) {
   const ref = useRef<THREE.InstancedMesh>(null);
@@ -155,6 +163,10 @@ function NeuronTubes({
         onPointerOver?.({ clientX: e.clientX, clientY: e.clientY });
       }}
       onPointerOut={onPointerOut}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.();
+      }}
     >
       <meshStandardMaterial
         color={baseColor}
@@ -178,6 +190,7 @@ export function RingScene({
   lineWidth = 2,
   onHover,
   hoveredIndex,
+  onSelect,
 }: Props) {
   const refs = useRef<Array<ColorBearer>>([]);
   const tmp = useMemo(() => new THREE.Color(), []);
@@ -255,8 +268,61 @@ export function RingScene({
   };
   const handlePointerOut = () => onHover?.(null);
 
+  // DTI datasets: render explicit edges between region centroids. The
+  // skeletons-as-stars are too austere to show what's actually connected
+  // to what -- the edges carry the structural information.
+  const isDTI = payload.metadata.dataset_id.startsWith("dti");
+  const dtiEdges = useMemo(() => {
+    if (!isDTI) return null;
+    const model = (payload as unknown as { model?: { weights: number[][]; global_gain: number } }).model;
+    if (!model) return null;
+    const W = model.weights;
+    const gain = model.global_gain;
+    const points: number[] = [];
+    const N = payload.neurons.length;
+    // Only draw edges above a magnitude threshold so the scene isn't a
+    // hairball. Use the top-quartile weight as the threshold.
+    const flat: number[] = [];
+    for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+      const w = Math.abs(W[i][j]) * gain;
+      if (w > 0) flat.push(w);
+    }
+    flat.sort((a, b) => a - b);
+    const threshold = flat[Math.floor(flat.length * 0.7)] ?? 0;
+    for (let i = 0; i < N; i++) {
+      const sa = payload.neurons[i].soma;
+      if (!sa) continue;
+      for (let j = i + 1; j < N; j++) {
+        const sb = payload.neurons[j].soma;
+        if (!sb) continue;
+        const w = Math.abs(W[i][j]) * gain;
+        if (w <= threshold) continue;
+        points.push(sa[0], sa[1], sa[2], sb[0], sb[1], sb[2]);
+      }
+    }
+    return new Float32Array(points);
+  }, [payload, isDTI]);
+
   return (
     <group>
+      {dtiEdges && dtiEdges.length > 0 && (
+        <lineSegments>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              args={[dtiEdges, 3]}
+              count={dtiEdges.length / 3}
+              itemSize={3}
+            />
+          </bufferGeometry>
+          <lineBasicMaterial
+            color="#3b6ec9"
+            transparent
+            opacity={0.32}
+            depthWrite={false}
+          />
+        </lineSegments>
+      )}
       {payload.neurons.map((n, i) => {
         const common = {
           neuron: n,
@@ -266,6 +332,7 @@ export function RingScene({
           lineWidth,
           onPointerOver: handlePointerOver(i),
           onPointerOut: handlePointerOut,
+          onClick: onSelect ? () => onSelect(i) : undefined,
           isHovered: hoveredIndex === i,
         };
         return renderMode === "lines" ? (
