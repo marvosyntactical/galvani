@@ -5,15 +5,16 @@
 <p align="center">
 A connectome to neural dynamics pipeline
 </p>
+<p>
+ <a href="https://marvosyntactical.github.io/galvani">https://marvosyntactical.github.io/galvani</a>
+ </p>
 <p align="center">
   <img src="video/galvani_demo.gif" alt="Galvani web demo" width="720">
 </p>
 
----
  Galvani takes a subgraph of a connectome and returns a runnable simulation — rate model, LIF, AdEx, or Hodgkin-Huxley — with biologically reasonable default parameters.
 
 
-**Live demo:** [Live demo](https://marvosyntactical.github.io/galvani)
 
 ---
 
