@@ -1128,3 +1128,33 @@ pre.model-eq {
 .stats-host > * {
   pointer-events: auto;
 }
+
+/* GitHub source link, pinned to the bottom-right corner of the viewport.
+   Sits inside the sidebar's stacking context (z-index 10) but uses
+   position: fixed so scrolling the sidebar doesn't take it out of view. */
+.github-link {
+  position: fixed;
+  bottom: 14px;
+  right: 14px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--muted);
+  opacity: 0.55;
+  transition:
+    opacity 140ms ease,
+    color 140ms ease;
+  line-height: 0;
+}
+.github-link:hover {
+  opacity: 1;
+  color: var(--fg);
+}
+.github-link svg {
+  width: 22px;
+  height: 22px;
+  fill: currentColor;
+}
