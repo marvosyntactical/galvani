@@ -19,6 +19,7 @@ import { DetailScene, type CompanionNeuron } from "./DetailScene";
 import { NeuronModelInfo } from "./NeuronModelInfo";
 import { HelpPopover } from "./HelpPopover";
 import { loadNeuronDetail, type NeuronDetail } from "./detailLoader";
+import { runBioSession, type BioSession } from "./mc/runMcSession";
 
 export default function App() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
@@ -63,6 +64,10 @@ export default function App() {
   const [connectedK, setConnectedK] = useState(5);
   const [companions, setCompanions] = useState<CompanionNeuron[]>([]);
   const [companionsLoading, setCompanionsLoading] = useState(false);
+  // How many *unique* neurons the current companion fetch is loading.
+  // Symmetrised circuits (HD ring) have top-K-in == top-K-out, so the
+  // unique count is K rather than 2·K.
+  const [companionsCount, setCompanionsCount] = useState(0);
   // Mobile: collapse the sidebar by default and let a hamburger toggle it.
   // We initialize from `matchMedia` so the panel starts off-canvas on phone
   // viewports without flashing visible on the first paint.
@@ -94,6 +99,29 @@ export default function App() {
   // stats.js's inline styles.
   const [statsVisible, setStatsVisible] = useState(false);
   const statsHostRef = useRef<HTMLDivElement>(null);
+  // Biophysical (multi-compartment HH) session state. See MC.md.
+  // `idle`     — no bio sim has been requested for this focus + neighborhood.
+  // `computing`— workers are running; `bioProgress` is in [0, 1].
+  // `ready`    — `bioSession` holds the result; `bioVisible` controls whether
+  //              the voltage map is rendered. The user can toggle visibility
+  //              off without discarding the cached result.
+  // `error`    — `bioError` holds the message; user can retry.
+  type BioState = "idle" | "computing" | "ready" | "error";
+  const [bioState, setBioState] = useState<BioState>("idle");
+  const [bioVisible, setBioVisible] = useState(false);
+  const [bioProgress, setBioProgress] = useState(0);
+  const [bioError, setBioError] = useState<string | null>(null);
+  const [bioSession, setBioSession] = useState<BioSession | null>(null);
+  // AbortController for the in-flight worker batch. We tear down on
+  // detail-mode exit, focus change, or explicit user cancel.
+  const bioAbortRef = useRef<AbortController | null>(null);
+  // Cache keyed by `(focused, neighborSig, scenario, modelId)` so the user
+  // can flip the toggle off → on without re-running.
+  const bioCacheRef = useRef<Map<string, BioSession>>(new Map());
+  // Latest `requestBioSim` closure, kept in a ref so the global keyboard
+  // handler (defined in a useEffect with a stable dep list) can call it
+  // without forcing the effect to re-attach on every render.
+  const requestBioSimRef = useRef<() => void>(() => {});
   // Auto-hide bottom controls bar: show when mouse is near the bottom of
   // the canvas area or while the user is actively dragging the scrubber.
   const [controlsVisible, setControlsVisible] = useState(false);
@@ -278,6 +306,12 @@ export default function App() {
           e.preventDefault();
           setStatsVisible((s) => !s);
           return;
+        case "KeyM":
+          if (selectedNeuronIndex !== null) {
+            e.preventDefault();
+            requestBioSimRef.current();
+          }
+          return;
       }
     }
     window.addEventListener("keydown", onKey);
@@ -335,6 +369,156 @@ export default function App() {
     setDrawerOpen(!isMobile);
   }, [selectedNeuronIndex]);
 
+  // Tear down any running bio session (and clear the result) when the user
+  // leaves detail mode or changes which neuron is focused. Cache survives
+  // — toggling back to a previously-computed neuron reuses it.
+  useEffect(() => {
+    if (selectedNeuronIndex === null) {
+      bioAbortRef.current?.abort();
+      bioAbortRef.current = null;
+      setBioState("idle");
+      setBioVisible(false);
+      setBioSession(null);
+      setBioError(null);
+      setBioProgress(0);
+    }
+  }, [selectedNeuronIndex]);
+
+  // Cache key for a given biophysical request. The neighborhood signature
+  // changes when the user toggles `showConnected` or shifts `connectedK`,
+  // because those change which neurons get a worker. The "anchor" — i.e.
+  // the outer-time at which the bio window starts — is captured at
+  // compute time, so it's not part of the auto-invalidation key (the
+  // cache map below uses a key that includes it).
+  const bioCacheKey = useMemo(() => {
+    if (selectedNeuronIndex === null || !scenario) return null;
+    const neighbors = showConnected ? `n=${connectedK}` : "n=0";
+    return `${scenario.id}|${modelId}|f=${selectedNeuronIndex}|${neighbors}`;
+  }, [selectedNeuronIndex, scenario, modelId, showConnected, connectedK]);
+
+  /** Length of the bio simulation window in biological ms. Short enough
+   *  that ms-scale spike events are visible when stretched across the
+   *  outer scrubber. */
+  const BIO_DURATION_MS = 200;
+
+  // Invalidate when the request key changes (different neuron / neighbors
+  // / model / scenario). Cancel any pending run; reset visibility but
+  // keep the cache so previously-computed sessions can be revived.
+  useEffect(() => {
+    bioAbortRef.current?.abort();
+    bioAbortRef.current = null;
+    setBioVisible(false);
+    setBioSession(null);
+    setBioState("idle");
+    setBioProgress(0);
+    setBioError(null);
+  }, [bioCacheKey]);
+
+  // Kick off (or revive from cache) the biophysical computation. Called
+  // from the `M` shortcut or the SNV button. Idempotent: re-pressing
+  // while running is a no-op; pressing while `ready` flips visibility
+  // without re-computing.
+  const requestBioSim = async () => {
+    if (selectedNeuronIndex === null || !payload || !bioCacheKey) return;
+    // State machine — see `BioState` comment up top.
+    if (bioState === "computing") return;
+    if (bioState === "ready") {
+      // Cheap toggle: hide / show the voltage map without recomputing.
+      setBioVisible((v) => !v);
+      return;
+    }
+    // Anchor the bio window at the user's current scrubber position.
+    // Include it in the cache key so re-computing at a different outer
+    // time produces a new entry; revisiting the same anchor reuses.
+    const anchorOuterMs =
+      (displayFrame / Math.max(1, payload.metadata.n_frames - 1)) *
+      payload.metadata.duration *
+      1000;
+    const anchoredKey = `${bioCacheKey}|anchor=${Math.round(anchorOuterMs)}`;
+    const cached = bioCacheRef.current.get(anchoredKey);
+    if (cached) {
+      setBioSession(cached);
+      setBioVisible(true);
+      setBioState("ready");
+      frameRef.current = 0;
+      setDisplayFrame(0);
+      // Auto-play the bio sim from the start so the user sees spikes
+      // unfold immediately rather than having to find Play.
+      setPlaying(true);
+      return;
+    }
+    // Build the target list: focused neuron + (top-k incoming/outgoing
+    // when neighbors are visible). We dedupe and cap at 11 so we never
+    // spawn more than a sensible number of workers.
+    const targets: number[] = [selectedNeuronIndex];
+    if (showConnected && payload.model) {
+      const W = payload.model.weights;
+      const N = W.length;
+      const incoming: Array<{ idx: number; w: number }> = [];
+      const outgoing: Array<{ idx: number; w: number }> = [];
+      for (let j = 0; j < N; j++) {
+        if (j === selectedNeuronIndex) continue;
+        const wIn = Math.abs(W[selectedNeuronIndex][j]);
+        const wOut = Math.abs(W[j][selectedNeuronIndex]);
+        if (wIn > 0) incoming.push({ idx: j, w: wIn });
+        if (wOut > 0) outgoing.push({ idx: j, w: wOut });
+      }
+      incoming.sort((a, b) => b.w - a.w);
+      outgoing.sort((a, b) => b.w - a.w);
+      const k = Math.min(5, connectedK);
+      const seen = new Set<number>([selectedNeuronIndex]);
+      for (const e of incoming.slice(0, k)) {
+        if (!seen.has(e.idx)) { seen.add(e.idx); targets.push(e.idx); }
+      }
+      for (const e of outgoing.slice(0, k)) {
+        if (!seen.has(e.idx)) { seen.add(e.idx); targets.push(e.idx); }
+      }
+    }
+
+    const abort = new AbortController();
+    bioAbortRef.current = abort;
+    setBioState("computing");
+    setBioProgress(0);
+    setBioError(null);
+    const baseUrl = import.meta.env.BASE_URL;
+    try {
+      const session = await runBioSession({
+        payload,
+        outerModelId: modelId,
+        targetIndices: targets,
+        loadDetail: (i) => loadNeuronDetail(
+          payload.metadata.dataset_id,
+          payload.neurons[i].id,
+          baseUrl,
+        ),
+        anchorOuterMs,
+        bioDurationMs: BIO_DURATION_MS,
+        signal: abort.signal,
+        onProgress: (frac) => setBioProgress(frac),
+      });
+      if (abort.signal.aborted) return;
+      bioCacheRef.current.set(anchoredKey, session);
+      setBioSession(session);
+      setBioVisible(true);
+      setBioState("ready");
+      // The scrubber is repurposed as the bio-time slider while bio is
+      // on; reset it to 0 so the user starts at the beginning of the
+      // computed bio window rather than wherever the outer scrubber was
+      // pointing (which is on a totally different timescale now).
+      frameRef.current = 0;
+      setDisplayFrame(0);
+      // Auto-play the bio sim from the start so the user sees spikes
+      // unfold immediately rather than having to find Play.
+      setPlaying(true);
+    } catch (err) {
+      if ((err as DOMException)?.name === "AbortError") return;
+      setBioError(err instanceof Error ? err.message : String(err));
+      setBioState("error");
+    }
+  };
+  // Stash the closure for the keyboard handler.
+  requestBioSimRef.current = requestBioSim;
+
   // Fetch top-k incoming/outgoing companion details when the toggle is on.
   useEffect(() => {
     if (
@@ -365,29 +549,39 @@ export default function App() {
     const topIn = incoming.slice(0, connectedK).map((e) => e.idx);
     const topOut = outgoing.slice(0, connectedK).map((e) => e.idx);
 
+    // For symmetrised circuits (HD ring) incoming and outgoing top-K are
+    // the same neurons. Dedupe so we don't fetch the same skeleton twice
+    // and the "Loading N companions" overlay reports the real count.
+    const outSet = new Set(topOut);
+    const inSet = new Set(topIn);
+    const seen = new Set<number>();
+    const uniqueTargets: Array<{ idx: number; role: "incoming" | "outgoing" }> = [];
+    for (const idx of topIn) {
+      if (seen.has(idx)) continue;
+      seen.add(idx);
+      uniqueTargets.push({ idx, role: outSet.has(idx) ? "outgoing" : "incoming" });
+    }
+    for (const idx of topOut) {
+      if (seen.has(idx)) continue;
+      seen.add(idx);
+      uniqueTargets.push({ idx, role: inSet.has(idx) ? "incoming" : "outgoing" });
+    }
+
     const baseUrl = import.meta.env.BASE_URL;
     setCompanionsLoading(true);
+    setCompanionsCount(uniqueTargets.length);
     let cancelled = false;
-    Promise.all([
-      ...topIn.map(async (idx) => {
+    Promise.all(
+      uniqueTargets.map(async ({ idx, role }) => {
         const nrn = payload.neurons[idx];
         const d = await loadNeuronDetail(
           payload.metadata.dataset_id,
           nrn.id,
           baseUrl,
         );
-        return { detail: d, neuronIndex: idx, role: "incoming" as const };
+        return { detail: d, neuronIndex: idx, role };
       }),
-      ...topOut.map(async (idx) => {
-        const nrn = payload.neurons[idx];
-        const d = await loadNeuronDetail(
-          payload.metadata.dataset_id,
-          nrn.id,
-          baseUrl,
-        );
-        return { detail: d, neuronIndex: idx, role: "outgoing" as const };
-      }),
-    ])
+    )
       .then((arr) => {
         if (!cancelled) {
           setCompanions(arr);
@@ -459,6 +653,16 @@ export default function App() {
     ? Array.from(new Set(payload.neurons.map((n) => n.cell_type)))
     : [];
 
+  // When bio view is on, the scrubber is repurposed: scrubber fraction
+  // [0, 1] maps to bio time [0, bioDurationMs]. The outer scenario isn't
+  // visible in detail mode anyway, so this hijack is invisible to the
+  // user — they see a single time slider that controls the bio playback.
+  const bioTimeMs =
+    bioVisible && bioSession && payload
+      ? (currentFrame / Math.max(1, payload.metadata.n_frames - 1)) *
+        bioSession.bioDurationMs
+      : null;
+
   const hoveredNeuron =
     hover && payload ? payload.neurons[hover.neuronIndex] : null;
   const hoveredStim =
@@ -505,6 +709,8 @@ export default function App() {
                 neuronIndex={selectedNeuronIndex}
                 frameRef={frameRef}
                 companions={companions}
+                bioSession={bioSession}
+                bioVisible={bioVisible}
               />
             ) : (
               <RingScene
@@ -539,7 +745,7 @@ export default function App() {
             className="loading-overlay"
             style={{ background: "rgba(11, 15, 23, 0.4)" }}
           >
-            Loading {connectedK * 2} connected neurons…
+            Loading {companionsCount} connected neuron{companionsCount === 1 ? "" : "s"}…
           </div>
         )}
         {payloadLoading && (
@@ -615,7 +821,34 @@ export default function App() {
             connectedK={connectedK}
             onToggleConnected={setShowConnected}
             onChangeK={setConnectedK}
-            onClose={() => setDrawerOpen(false)}
+            onClose={() => {
+              // On mobile the drawer covers the canvas, so the triangle
+              // means "back to canvas (stay in detail mode)". On desktop
+              // closing the drawer alone is pointless — there's no LHS
+              // X-button there — so the triangle exits detail mode.
+              if (window.matchMedia("(max-width: 720px)").matches) {
+                setDrawerOpen(false);
+              } else {
+                setSelectedNeuronIndex(null);
+              }
+            }}
+            bioState={bioState}
+            bioVisible={bioVisible}
+            bioProgress={bioProgress}
+            bioError={bioError}
+            bioTotalCompartments={bioSession?.totalCompartments ?? 0}
+            bioResult={bioSession?.results.get(drawerIndex) ?? null}
+            bioTimeMs={bioTimeMs}
+            bioAnchorOuterMs={bioSession?.anchorOuterMs ?? null}
+            onTriggerBio={requestBioSim}
+            onSeekBioFraction={(fraction) => {
+              if (!payload) return;
+              const n = payload.metadata.n_frames;
+              const target = fraction * Math.max(1, n - 1);
+              frameRef.current = target;
+              setDisplayFrame(target);
+              setPlaying(false);
+            }}
           />
         )}
       </aside>
@@ -824,34 +1057,11 @@ export default function App() {
         </Infobox>
 
         <Infobox id="model" title="Model" openId={openCard} onToggle={setOpenCard}>
-          <p>
-            Four levels of detail are available; pick from the{" "}
-            <strong>Model</strong> dropdown above. Same circuit, different
-            equations per neuron.
-          </p>
-          <ul style={{ paddingLeft: 18, margin: "4px 0", fontSize: 12 }}>
-            <li>
-              <strong>Rate</strong> — one scalar firing rate per neuron, no
-              spikes. Fast; population-level dynamics. Default for most
-              scenarios.
-            </li>
-            <li>
-              <strong>LIF</strong> — leaky integrate-and-fire. Voltage + spike
-              + reset + refractory.
-            </li>
-            <li>
-              <strong>AdEx</strong> — adaptive exponential IF. Adds spike-frequency
-              adaptation and bursting (Brette & Gerstner 2005).
-            </li>
-            <li>
-              <strong>HH</strong> — full Hodgkin-Huxley. Real ion-channel
-              kinetics (Na+/K+/leak). Slowest to simulate.
-            </li>
-          </ul>
-          <p>
-            <strong>Stochasticity:</strong> the slider lets you add Gaussian
-            noise to the voltage equation (channel noise / synaptic failure).
-            0 = deterministic.
+          <ModelDeepDive modelId={modelId} />
+          <p style={{ marginTop: 12, color: "var(--muted)", fontSize: 12 }}>
+            Switch the active model from the <strong>Menu</strong> register
+            above. Same circuit, same parameterizer, different equations per
+            neuron.
           </p>
         </Infobox>
 
@@ -974,24 +1184,64 @@ export default function App() {
               <kbd>F</kbd>
               <span>Toggle the FPS / memory stats overlay</span>
             </div>
+            <div className="shortcut-row">
+              <kbd>M</kbd>
+              <span>
+                (In detail view) Compute multi-compartment biophysics, or
+                toggle the voltage map when already computed
+              </span>
+            </div>
           </dl>
         </Infobox>
         </div>
-        <a
-          className="github-link"
-          href="https://github.com/marvosyntactical/galvani"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="View source on GitHub"
-          title="View source on GitHub"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              fillRule="evenodd"
-              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"
-            />
-          </svg>
-        </a>
+        <div className="sidebar-footer">
+          <a
+            className="sidebar-footer-link sidebar-footer-icon"
+            href="https://marvosyntactical.github.io"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Marvin Koss — personal site"
+            title="Marvin Koss — personal site"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+          </a>
+          <a
+            className="sidebar-footer-link sidebar-footer-coffee"
+            href="https://www.buymeacoffee.com/marvinkoss"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Tip the maintainer"
+          >
+            Buy me a coffee!
+          </a>
+          <a
+            className="sidebar-footer-link github-link"
+            href="https://github.com/marvosyntactical/galvani"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="View source on GitHub"
+            title="View source on GitHub"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                fillRule="evenodd"
+                d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"
+              />
+            </svg>
+          </a>
+        </div>
         </>
       </div>
 
@@ -1011,8 +1261,14 @@ export default function App() {
           className="play-btn"
           onClick={() => setPlaying((p) => !p)}
           disabled={!payload}
+          aria-label={playing ? "Pause" : "Play"}
+          title={playing ? "Pause" : "Play"}
         >
-          {playing ? "Pause" : "Play"}
+          {playing ? (
+            <span className="pause-glyph" aria-hidden />
+          ) : (
+            <span className="play-glyph" aria-hidden />
+          )}
         </button>
         <div className="scrubber">
           <input
@@ -1053,6 +1309,142 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function ModelDeepDive({ modelId }: { modelId: ModelId }) {
+  switch (modelId) {
+    case "rate":
+      return (
+        <>
+          <p>
+            <strong>Rate</strong>, the currently selected model, is the
+            fastest of the four backends. Each neuron's state is a single
+            scalar firing rate <code>r(t)</code> — no spikes, no voltage, no
+            refractory period. The equation is Wilson-Cowan-style population
+            dynamics:
+          </p>
+          <pre className="model-eq">
+            {"τ · dr/dt = -r + φ(W · r + I + b)"}
+          </pre>
+          <p>
+            Per-cell-type time constants <code>τ</code> are 10-20 ms; the
+            nonlinearity <code>φ</code> is <code>tanh</code> for HD-ring
+            scenarios and <code>relu</code> for the mushroom body and the
+            cortical microcircuit. <code>W</code> is the parameterized
+            connectome weight matrix (synapse counts → log1p → sign by NT →
+            global gain); <code>I</code> is the per-frame stimulus drive.
+          </p>
+          <p>
+            This is the model Duan, Dong & Fiete (2025) use for the fly HD
+            ring and the workhorse of most Wilson-Cowan-style population
+            modeling. It hides spike timing, refractoriness and bursting but
+            captures attractor structure, gain, and which populations are
+            co-active. Reach for it when you care about <em>what</em> fires,
+            less about <em>when</em>.
+          </p>
+          <p>
+            <strong>Stochasticity</strong> adds zero-mean Gaussian jitter to
+            each neuron's displayed rate per frame — a coarse stand-in for
+            synaptic noise.
+          </p>
+        </>
+      );
+    case "lif":
+      return (
+        <>
+          <p>
+            <strong>LIF</strong> (leaky integrate-and-fire), the currently
+            selected model, replaces the rate variable with a membrane
+            voltage <code>v(t)</code> that integrates synaptic drive and
+            fires when it crosses threshold:
+          </p>
+          <pre className="model-eq">
+            {"τ · dv/dt = -(v - v_rest) + R · (W · s + I + b)\n" +
+              "if v ≥ v_thr: emit spike, v := v_reset (refractory 2 ms)"}
+          </pre>
+          <p>
+            <code>s</code> is a per-neuron exponential synaptic-conductance
+            trace kicked up by each presynaptic spike, decaying with{" "}
+            <code>τ_syn ≈ 5 ms</code>. The displayed activity is a sliding
+            spike-density estimate rather than the raw voltage.
+          </p>
+          <p>
+            LIF is the textbook discrete-spike model (Gerstner & Kistler
+            2002, Stein 1965). It captures threshold behavior and the
+            refractory dead time that pure rate models miss, but flattens
+            spike-frequency adaptation. The integration timestep needs to be
+            small (~0.2 ms) to resolve threshold crossings; per-ms wall
+            time it's roughly 5-10× the rate model.
+          </p>
+          <p>
+            <strong>Stochasticity</strong> here adds Gaussian noise to the
+            voltage equation — a stand-in for channel noise and synaptic
+            failure.
+          </p>
+        </>
+      );
+    case "adex":
+      return (
+        <>
+          <p>
+            <strong>AdEx</strong> (adaptive exponential integrate-and-fire,
+            Brette & Gerstner 2005), the currently selected model, extends
+            LIF with two ingredients: an exponential spike-onset term that
+            sharpens the threshold crossing, and a slow adaptation current{" "}
+            <code>w</code> that builds up with each spike and decays back
+            over <code>τ_w ≈ 150 ms</code>.
+          </p>
+          <pre className="model-eq">
+            {"C · dv/dt = -g_L(v - E_L) + g_L·Δ_T·exp((v - v_T)/Δ_T)\n" +
+              "             + R·(W·s + I + b) - w\n" +
+              "τ_w · dw/dt = a(v - E_L) - w\n" +
+              "if v ≥ v_peak: v := v_reset, w := w + Δw"}
+          </pre>
+          <p>
+            The adaptation current is what gives AdEx its name and its
+            personality. Neurons fire faster at stimulus onset, slow down as{" "}
+            <code>w</code> accumulates, and can burst on rebound when{" "}
+            <code>w</code> decays. AdEx is the standard middle ground when
+            you want LIF's tractability but need spike-frequency adaptation
+            or class-2 excitability for the science you're doing. Naud,
+            Marcille, Clopath & Gerstner (2008) is the canonical reference
+            for what regimes you can get out of it.
+          </p>
+        </>
+      );
+    case "hh":
+      return (
+        <>
+          <p>
+            <strong>HH</strong> (Hodgkin-Huxley 1952), the currently selected
+            model, is the full biophysical formulation. There's no threshold
+            and no reset rule — spikes emerge from the interaction of
+            voltage-gated sodium and potassium channels. The state is{" "}
+            <code>(v, m, h, n)</code>: voltage plus three gating variables.
+          </p>
+          <pre className="model-eq">
+            {"C · dv/dt = -g_Na · m³h(v - E_Na)\n" +
+              "          - g_K · n⁴(v - E_K)\n" +
+              "          - g_L(v - E_L) + I_syn + I_ext\n" +
+              "dx/dt = α_x(v)(1 - x) - β_x(v)·x   for x ∈ {m, h, n}"}
+          </pre>
+          <p>
+            <code>m</code> activates Na⁺ on depolarization (fast),{" "}
+            <code>h</code> inactivates it (slow), <code>n</code> activates
+            K⁺ (recovery). Threshold, refractory period, and spike shape are
+            all emergent. Hodgkin and Huxley got the 1963 Nobel for this; the
+            squid-axon experiments date to 1952.
+          </p>
+          <p>
+            HH needs a small timestep (~50 μs) for the gating kinetics — per
+            millisecond simulated it's roughly 10× slower than LIF. Reach
+            for it when subthreshold dynamics or specific ion currents
+            matter, or when you need a model you can extend with extra
+            channels (Ca²⁺, h-current) without changing the framework.
+          </p>
+        </>
+      );
+  }
 }
 
 function HyperParamsView({ hp }: { hp: HyperParams }) {

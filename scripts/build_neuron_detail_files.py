@@ -41,80 +41,99 @@ def _build_per_neuron(
       positions: flat (x,y,z) array, length 3*N_nodes
       radii:     length N_nodes
       edges:     flat (parent_idx, child_idx) array, length 2*(N_nodes-1)
+      parents:   length N_nodes, parent compartment idx (-1 for the soma /
+                 disconnected roots). Forms the spanning tree needed by the
+                 multi-compartment cable solver.
+      compartment_length_nm: length N_nodes, Euclidean distance in raw nm
+                 from each node to its parent (0 for roots). Needed for
+                 axial conductance computation in the bio sim.
+      soma_idx:  index of the inferred soma compartment (largest-radius
+                 node in the skeleton — more reliable than "root" for
+                 hemibrain SWCs, which often have disconnected branch
+                 fragments with link = -1).
     """
     rows = swc.reset_index(drop=True)
-    xs = rows["x"].to_numpy(dtype=np.float64)
-    ys = rows["y"].to_numpy(dtype=np.float64)
-    zs = rows["z"].to_numpy(dtype=np.float64)
-    radii = rows["radius"].to_numpy(dtype=np.float64)
+    xs_nm = rows["x"].to_numpy(dtype=np.float64)
+    ys_nm = rows["y"].to_numpy(dtype=np.float64)
+    zs_nm = rows["z"].to_numpy(dtype=np.float64)
+    radii_nm = rows["radius"].to_numpy(dtype=np.float64)
     parent_row = rows["link"].to_numpy(dtype=np.int64)
 
-    # Normalise to demo coords.
-    cx, cy, cz = bbox_center
-    pts = np.stack([xs, ys, zs], axis=1)
-    pts = (pts - np.array([cx, cy, cz])) * bbox_scale
-    radii_n = radii * bbox_scale
+    rowid_to_orig_idx = dict(zip(rows["rowId"].astype(int), rows.index, strict=True))
+    orig_parent_idx = np.array(
+        [-1 if int(p) == -1 else rowid_to_orig_idx.get(int(p), -1) for p in parent_row],
+        dtype=np.int64,
+    )
 
-    # Optional: drop very fine processes for size.
+    # Decide which original-index nodes survive the min_radius filter.
     if min_radius > 0:
-        keep = radii >= min_radius
-        keep[0] = True
-        idx_map = -np.ones(len(rows), dtype=np.int64)
-        idx_map[keep] = np.arange(keep.sum())
-        # For dropped nodes, parent becomes their nearest kept ancestor.
-        rowid_to_idx = dict(zip(rows["rowId"].astype(int), rows.index, strict=True))
-        new_parents = []
-        kept_indices = np.flatnonzero(keep)
-        for i in kept_indices:
-            p = int(parent_row[i])
-            steps = 0
-            while p != -1 and steps < 100_000:
-                pi = rowid_to_idx.get(p)
-                if pi is None or pi >= len(keep):
-                    p = -1
-                    break
-                if keep[pi]:
-                    new_parents.append(int(idx_map[pi]))
-                    break
-                p = int(parent_row[pi])
-                steps += 1
-            else:
-                new_parents.append(-1)
-            if (
-                p == -1
-                and (
-                    not new_parents
-                    or (new_parents[-1] != -1 and len(new_parents) - 1 < len(kept_indices))
-                )
-                and len(new_parents) < kept_indices.tolist().index(i) + 1
-            ):
-                new_parents.append(-1)
-        # Build outputs
-        pts = pts[keep]
-        radii_n = radii_n[keep]
+        keep_mask = radii_nm >= min_radius
+        keep_mask[0] = True  # always keep row 0 (typically the seed root)
     else:
-        # Map each row's parent rowId to its index (or -1 for root).
-        rowid_to_idx = dict(zip(rows["rowId"].astype(int), rows.index, strict=True))
-        new_parents = [-1 if int(p) == -1 else rowid_to_idx.get(int(p), -1) for p in parent_row]
+        keep_mask = np.ones(len(rows), dtype=bool)
 
-    # Build edge list: (parent_idx, child_idx) for every non-root node.
-    edges: list[int] = []
-    for child_idx, parent_idx in enumerate(new_parents):
-        if parent_idx is None or parent_idx < 0:
+    # For each kept node, find its nearest kept ancestor under `orig_parent_idx`.
+    # `new_idx[orig]` = its index in the kept list, or -1 if filtered out.
+    new_idx = -np.ones(len(rows), dtype=np.int64)
+    kept_orig = np.flatnonzero(keep_mask)
+    new_idx[kept_orig] = np.arange(len(kept_orig))
+
+    parents: list[int] = []
+    parent_orig_for_kept: list[int] = []
+    for orig in kept_orig:
+        ancestor = int(orig_parent_idx[orig])
+        # Walk up until we find a kept ancestor (or hit the root).
+        steps = 0
+        while ancestor != -1 and not keep_mask[ancestor] and steps < 1_000_000:
+            ancestor = int(orig_parent_idx[ancestor])
+            steps += 1
+        parents.append(int(new_idx[ancestor]) if ancestor != -1 else -1)
+        parent_orig_for_kept.append(ancestor)
+
+    # Geometry: kept-node positions in raw nm (for compartment_length) and
+    # in scaled demo space (for positions emitted to JSON).
+    pts_nm = np.stack([xs_nm, ys_nm, zs_nm], axis=1)[kept_orig]
+    radii_n = (radii_nm * bbox_scale)[kept_orig]
+    cx, cy, cz = bbox_center
+    pts_scaled = (pts_nm - np.array([cx, cy, cz])) * bbox_scale
+
+    # Compartment lengths (Euclidean distance to parent in raw nm). Roots
+    # take 0 — they're treated as the boundary of the cable for the solver.
+    compartment_length_nm = np.zeros(len(kept_orig), dtype=np.float64)
+    for i_kept, p_orig in enumerate(parent_orig_for_kept):
+        if p_orig == -1:
             continue
-        edges.append(int(parent_idx))
-        edges.append(int(child_idx))
+        delta = pts_nm[i_kept] - np.stack(
+            [xs_nm[p_orig], ys_nm[p_orig], zs_nm[p_orig]],
+        )
+        compartment_length_nm[i_kept] = float(np.linalg.norm(delta))
 
-    # Round for size.
-    positions = [round(v, 2) for v in pts.flatten().tolist()]
+    # Soma = largest-radius node among the kept set. More reliable than
+    # picking the SWC root, because hemibrain skeletons routinely ship with
+    # disconnected branch fragments whose link is -1.
+    soma_idx = int(np.argmax(radii_nm[kept_orig]))
+
+    # Edge list (kept for the existing renderer).
+    edges: list[int] = []
+    for child_idx, parent_idx in enumerate(parents):
+        if parent_idx < 0:
+            continue
+        edges.append(parent_idx)
+        edges.append(child_idx)
+
+    positions = [round(v, 2) for v in pts_scaled.flatten().tolist()]
     radii_out = [round(v, 3) for v in radii_n.tolist()]
+    comp_len_out = [round(v, 1) for v in compartment_length_nm.tolist()]
 
     return {
         "body_id": int(body_id),
-        "n_nodes": len(pts),
+        "n_nodes": len(kept_orig),
         "positions": positions,
         "radii": radii_out,
         "edges": edges,
+        "parents": parents,
+        "compartment_length_nm": comp_len_out,
+        "soma_idx": soma_idx,
     }
 
 

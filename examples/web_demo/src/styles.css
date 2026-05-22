@@ -586,14 +586,44 @@ body {
   background: var(--accent);
   border: none;
   color: #ffffff;
-  padding: 6px 14px;
-  border-radius: 6px;
-  font-weight: 600;
+  /* Rectangular, no rounding — matches the register / button feel of
+     the rest of the technical UI. */
+  border-radius: 0;
+  padding: 0;
   cursor: pointer;
-  min-width: 70px;
+  width: 38px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 140ms ease;
 }
 .controls .play-btn:hover {
-  opacity: 0.9;
+  background: #ffa566;
+}
+/* Play icon: right-facing white triangle, drawn with borders so it
+   stays crisp at any zoom. Pause icon: two vertical bars side by side. */
+.controls .play-btn .play-glyph {
+  width: 0;
+  height: 0;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 10px solid #ffffff;
+  /* Optical centre — the bounding box is wider than the visual centre
+     of mass, so shift right a hair. */
+  margin-left: 2px;
+}
+.controls .play-btn .pause-glyph {
+  display: inline-flex;
+  gap: 4px;
+}
+.controls .play-btn .pause-glyph::before,
+.controls .play-btn .pause-glyph::after {
+  content: "";
+  width: 4px;
+  height: 14px;
+  background: #ffffff;
 }
 .controls .scrubber {
   flex: 1;
@@ -1129,35 +1159,58 @@ pre.model-eq {
   pointer-events: auto;
 }
 
-/* GitHub source link. Sits as the last flex-child of the sidebar so
-   `margin-top: auto` parks it at the bottom of the visible area when the
-   registers don't fill the column, and scrolls naturally into view at the
-   end of the stack when they do. No fixed positioning -- the previous
-   pinned variant felt detached from the panel. */
-.github-link {
-  align-self: flex-end;
+/* Sidebar footer: homepage globe / buy-me-a-coffee / github, right-aligned
+   at the bottom of the panel. `margin-top: auto` pushes it down when the
+   register stack is short and lets it scroll naturally into view at the
+   end of a long stack. */
+.sidebar-footer {
   margin-top: auto;
-  padding: 6px;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
+  justify-content: flex-end;
+  gap: 14px;
+  padding: 12px 0 4px;
+}
+.sidebar-footer-link {
   color: var(--muted);
-  opacity: 0.5;
+  opacity: 0.55;
+  text-decoration: none;
   transition:
     opacity 140ms ease,
     color 140ms ease;
   line-height: 0;
 }
-.github-link:hover {
+.sidebar-footer-link:hover {
   opacity: 1;
   color: var(--fg);
+}
+.sidebar-footer-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+.sidebar-footer-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.sidebar-footer-coffee {
+  font-size: 12px;
+  line-height: 1;
+  font-style: italic;
 }
 .github-link svg {
   width: 22px;
   height: 22px;
   fill: currentColor;
+}
+.github-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
 }
 
 /* --- LHS overlay buttons shown while in single-neuron detail mode ------
@@ -1209,8 +1262,100 @@ pre.model-eq {
   width: 20px;
   height: 20px;
 }
+/* On desktop the drawer's orange ◀ already exits detail mode (see App
+   `onClose` logic), so hiding the redundant ✕ keeps the canvas cleaner. */
+@media (min-width: 721px) {
+  .detail-overlay-exit {
+    display: none;
+  }
+}
 @media (max-width: 720px) {
   .detail-overlay-controls.drawer-open {
     display: none;
   }
+}
+
+/* --- Biophysical view trigger + register inside the SNV ---------------
+   The "Start biophysics" button sits at the top; below it is a
+   collapsible "Biophysics" infobox styled like the right-sidebar
+   accordion items but standalone (with its own borders). Pressing the
+   button auto-expands the infobox the first time. */
+.bio-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 6px;
+}
+.bio-infobox {
+  /* Override the full-bleed register-stack look: this card lives inside
+     the SNV's normal padding, so it needs its own top + side borders. */
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.015);
+}
+.bio-infobox .infobox-header {
+  padding: 12px 14px;
+}
+.bio-infobox .infobox-body p:first-child {
+  margin-top: 0;
+}
+.bio-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+.bio-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.bio-btn:disabled {
+  cursor: progress;
+}
+.bio-btn kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  background: var(--panel);
+  color: var(--muted);
+  font: 11px ui-monospace, SFMono-Regular, monospace;
+  border-radius: 2px;
+}
+.bio-btn-ready.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.bio-btn-error {
+  border-color: #f0883e;
+  color: #f0883e;
+}
+.bio-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 138, 61, 0.18);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+}
+.bio-note {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin: 8px 0 0;
+  line-height: 1.4;
+}
+.bio-error {
+  font-size: 11.5px;
+  color: #f0883e;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
 }
