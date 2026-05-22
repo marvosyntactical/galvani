@@ -1,4 +1,8 @@
-# galvani
+<p align="center">
+  <img src="ico/icon.png" alt="Galvani" width="140">
+</p>
+
+<h1 align="center">GALVANI</h1>
 
 **A connectome → executable neural model pipeline.** Galvani takes a subgraph of a published connectome (fly hemibrain, human DTI, H01-style cortical microcircuits) and returns a runnable simulation — rate model, LIF, AdEx, or Hodgkin-Huxley — with biologically reasonable default parameters.
 
