@@ -3,17 +3,17 @@
 </p>
 <h1 align="center">GALVANI</h1>
 <p align="center">
-**A connectome to neural dynamics pipeline.**
+A connectome to neural dynamics pipeline
 </p>
 <p align="center">
   <img src="video/galvani_demo.gif" alt="Galvani web demo" width="720">
 </p>
+
 ---
  Galvani takes a subgraph of a connectome and returns a runnable simulation — rate model, LIF, AdEx, or Hodgkin-Huxley — with biologically reasonable default parameters.
 
-**Live demo:** [marvosyntactical.github.io/galvani](https://marvosyntactical.github.io/galvani)
 
-Drag, zoom, click neurons. Switch between four levels of biophysical detail. The 3D morphology you see is real — electron-microscopy skeletons from the hemibrain dataset, or MNI centroids for the DTI scenes.
+**Live demo:** [Live demo](https://marvosyntactical.github.io/galvani)
 
 ---
 
