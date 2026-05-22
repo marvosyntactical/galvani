@@ -103,6 +103,80 @@ body {
   font: inherit;
 }
 
+/* ---- custom dropdown (replaces native <select> to avoid Firefox flicker) */
+.custom-dropdown {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+.cd-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.cd-toggle:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.cd-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cd-caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+.cd-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  max-height: 280px;
+  overflow-y: auto;
+  z-index: 100;
+}
+.cd-menu li {
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.cd-menu li:hover {
+  background: rgba(88, 166, 255, 0.15);
+}
+.cd-menu li.selected {
+  background: rgba(88, 166, 255, 0.25);
+  font-weight: 600;
+}
+.cd-menu li[aria-selected="true"]::before {
+  content: "✓ ";
+  color: var(--accent);
+}
+.cd-menu li[aria-selected="false"]::before {
+  content: "   ";
+}
+
+/* compact variant for the speed selector in the controls bar */
+.controls .custom-dropdown {
+  width: auto;
+  min-width: 80px;
+}
+
 .render-toggle {
   display: inline-flex;
   gap: 2px;

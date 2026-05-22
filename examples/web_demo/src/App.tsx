@@ -14,6 +14,7 @@ import { Infobox } from "./Infobox";
 import { RingScene, type HoverInfo, type RenderMode } from "./RingScene";
 import { UploadButton } from "./UploadButton";
 import { canResim, resimulateWithGain } from "./resim";
+import { Dropdown } from "./Dropdown";
 
 export default function App() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
@@ -250,37 +251,26 @@ export default function App() {
 
         <div className="selector">
           <label htmlFor="dataset-select">Dataset</label>
-          <select
+          <Dropdown
             id="dataset-select"
             value={datasetId ?? ""}
-            onChange={(e) => {
-              const id = e.target.value;
+            options={manifest.datasets.map((d) => ({ value: d.id, label: d.label }))}
+            onChange={(id) => {
               setDatasetId(id);
               const ds = manifest.datasets.find((d) => d.id === id);
               setScenarioId(ds?.scenarios[0]?.id ?? null);
             }}
-          >
-            {manifest.datasets.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.label}
-              </option>
-            ))}
-          </select>
+          />
         </div>
 
         <div className="selector">
           <label htmlFor="scenario-select">Scenario</label>
-          <select
+          <Dropdown
             id="scenario-select"
             value={scenarioId ?? ""}
-            onChange={(e) => setScenarioId(e.target.value)}
-          >
-            {dataset.scenarios.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
-            ))}
-          </select>
+            options={dataset.scenarios.map((s) => ({ value: s.id, label: s.label }))}
+            onChange={(id) => setScenarioId(id)}
+          />
         </div>
 
         <div className="selector">
@@ -471,18 +461,18 @@ export default function App() {
               : "—"}
           </span>
         </div>
-        <select
-          className="speed-select"
+        <Dropdown<number>
           value={speed}
-          onChange={(e) => setSpeed(parseFloat(e.target.value))}
+          options={[
+            { value: 0.25, label: "0.25×" },
+            { value: 0.5, label: "0.5×" },
+            { value: 1.0, label: "1×" },
+            { value: 2.0, label: "2×" },
+            { value: 4.0, label: "4×" },
+          ]}
+          onChange={setSpeed}
           disabled={!payload}
-        >
-          <option value={0.25}>0.25×</option>
-          <option value={0.5}>0.5×</option>
-          <option value={1.0}>1×</option>
-          <option value={2.0}>2×</option>
-          <option value={4.0}>4×</option>
-        </select>
+        />
       </div>
     </div>
   );

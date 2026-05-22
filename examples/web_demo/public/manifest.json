@@ -78,6 +78,20 @@
           "description": "30-region synthetic DTI brain. Drive the left hemisphere for 1 second, then switch to the right. Activity propagates across the inter-hemispheric connections."
         }
       ]
+    },
+    {
+      "id": "dti_hcp",
+      "label": "Human DTI brain \u00b7 HCP NAP_001 (real)",
+      "summary": "94-region human DTI connectome from a real diffusion-MRI scan (HCP subject NAP_001), parcelled with AAL2.",
+      "biology": "Real diffusion-MRI tractography from one Human Connectome Project subject. The 94 nodes are cortical and subcortical regions in the Automated Anatomical Parcellation 2 (AAL2, Rolls et al. 2015 NeuroImage); edge weights are streamline counts between parcels. Data shipped via the neurolib project (NAP_001 subject under neurolib's gw/ dataset). The same Galvani pipeline that runs the single-cell hemibrain HD ring runs on this region-level matrix with zero changes -- Subgraph -> Parameterizer -> Simulator is agnostic to whether each 'neuron' is one cell or one cortical parcel. Regions are rendered as small 6-spoked stars at their MNI centroids.",
+      "scenarios": [
+        {
+          "id": "visual_drive",
+          "label": "Drive visual cortex \u2192 propagation",
+          "file": "dti_hcp_visual_drive.json",
+          "description": "REAL human DTI connectome (94 AAL2 regions, HCP subject NAP_001 via the neurolib dataset). Drive the visual-cortex regions; activity propagates into the rest of the brain through real white-matter streamline counts."
+        }
+      ]
     }
   ]
 }

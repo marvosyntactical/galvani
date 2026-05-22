@@ -30,14 +30,26 @@ zero-network-dependency demo.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 import numpy as np
 import pandas as pd
 
 from galvani.connectome.base import Hemisphere, Neuron, Subgraph
+
+_AAL2_DATA_FILE = Path(__file__).with_name("_aal2_data.json")
+
+
+def _load_aal2_data() -> tuple[list[str], list[tuple[float, float, float]]]:
+    """Read AAL2 region labels + MNI centroids from the bundled JSON."""
+    with _AAL2_DATA_FILE.open() as f:
+        d = json.load(f)
+    coords = [(float(x), float(y), float(z)) for x, y, z in d["coords"]]
+    return list(d["labels"]), coords
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +195,112 @@ class DTIConnectome:
     def synthetic(cls, n_regions: int = 30, seed: int = 0) -> DTIConnectome:
         sub, regions = synthetic_brain_subgraph(n_regions=n_regions, seed=seed)
         return cls(sub, regions, dataset_version="synthetic-dti:v1")
+
+    @classmethod
+    def from_mat(
+        cls,
+        cm_path: str | Path,
+        *,
+        labels: list[str],
+        coords: list[tuple[float, float, float]],
+        mat_key: str = "sc",
+        dataset_version: str = "dti:v1",
+    ) -> DTIConnectome:
+        """Load a real DTI connectome from a MATLAB-format `.mat` file.
+
+        Args:
+            cm_path: path to a `.mat` containing a 2D streamline-count matrix.
+            labels: per-region label strings, length N (matches matrix size).
+            coords: per-region 3-tuple positions, length N.
+            mat_key: which variable inside the .mat to use (default `sc` per
+                the neurolib convention).
+            dataset_version: pinned version string for reproducibility.
+
+        Returns a `DTIConnectome` ready for `query()` and `subgraph()`.
+        """
+        import scipy.io as sio
+
+        mat = sio.loadmat(str(cm_path))
+        if mat_key not in mat:
+            raise KeyError(
+                f"{cm_path}: key {mat_key!r} not found "
+                f"(available: {[k for k in mat if not k.startswith('_')]})"
+            )
+        matrix = np.asarray(mat[mat_key])
+        n = matrix.shape[0]
+        if matrix.shape != (n, n):
+            raise ValueError(f"Expected a square matrix, got shape {matrix.shape}")
+        if len(labels) != n or len(coords) != n:
+            raise ValueError(f"labels/coords length {len(labels)}/{len(coords)} != matrix size {n}")
+
+        # Real DTI matrices are slightly asymmetric due to seeding direction.
+        # Symmetrize for downstream use.
+        matrix = 0.5 * (matrix + matrix.T)
+        matrix = matrix.astype(np.int64)
+        np.fill_diagonal(matrix, 0)
+
+        # Hemisphere heuristic: trailing _L / _R in the label, fall back to
+        # the sign of the x-centroid (positive = R in standard MNI).
+        regions: list[DTIRegion] = []
+        for i, (lbl, c) in enumerate(zip(labels, coords, strict=True)):
+            if lbl.endswith("_L") or lbl.endswith("_l"):
+                hemi = "L"
+            elif lbl.endswith("_R") or lbl.endswith("_r"):
+                hemi = "R"
+            else:
+                hemi = "R" if c[0] > 0 else "L"
+            regions.append(
+                DTIRegion(
+                    id=i + 1,
+                    label=lbl,
+                    hemisphere=hemi,
+                    centroid=(float(c[0]), float(c[1]), float(c[2])),
+                )
+            )
+
+        pre_idx, post_idx = np.nonzero(matrix)
+        pre_ids = np.array([regions[i].id for i in pre_idx], dtype=np.int64)
+        post_ids = np.array([regions[i].id for i in post_idx], dtype=np.int64)
+        weights = matrix[pre_idx, post_idx].astype(np.int32)
+
+        neurons = tuple(
+            Neuron(
+                id=r.id,
+                cell_type=f"cortex_{r.hemisphere}",
+                hemisphere=cast(Hemisphere, r.hemisphere),
+                nt="acetylcholine",
+                soma_position=r.centroid,
+            )
+            for r in regions
+        )
+        nt_pre = tuple("acetylcholine" for _ in pre_ids)
+        subgraph = Subgraph(
+            neurons=neurons,
+            pre_ids=pre_ids,
+            post_ids=post_ids,
+            counts=weights,
+            nt_pre=nt_pre,
+            dataset_version=dataset_version,
+        )
+        return cls(subgraph, tuple(regions), dataset_version=dataset_version)
+
+    @classmethod
+    def aal2_hcp_subject(
+        cls,
+        cm_path: str | Path,
+    ) -> DTIConnectome:
+        """Convenience: load a 94-region AAL2 DTI matrix using bundled
+        region labels and MNI centroids. Used by the demo to ship a real
+        human DTI connectome.
+        """
+        labels, coords = _load_aal2_data()
+        return cls.from_mat(
+            cm_path,
+            labels=labels,
+            coords=coords,
+            mat_key="sc",
+            dataset_version="hcp-aal2:v1",
+        )
 
     def query(
         self,

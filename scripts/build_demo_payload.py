@@ -649,6 +649,103 @@ def dti_scenarios():
     )
 
 
+# ---------------- DTI (real HCP/AAL2 data) -----------------------------------
+
+
+def dti_real_scenarios(mat_path: Path):
+    """Region-level dynamics on a REAL DTI matrix (HCP subject NAP_001,
+    AAL2 parcellation, 94 cortical+subcortical regions)."""
+    conn = DTIConnectome.aal2_hcp_subject(mat_path)
+    neurons = conn.query()
+    subgraph = conn.subgraph(neurons)
+    n = len(neurons)
+    # Region-level operating point: tau=100 ms, very small gain due to the
+    # heavy log-normal range of real DTI streamline counts.
+    opts = ParameterizerOptions(symmetrize=True, global_gain=0.0008, weight_heuristic="log1p")
+    spec = default_parameterizer(subgraph, opts)
+    import dataclasses as _dc
+
+    spec = _dc.replace(spec, tau=np.full_like(spec.tau, 0.1))
+
+    # Stimulus: drive visual cortex (occipital regions) first, watch
+    # activity propagate into other lobes via real white-matter tracts.
+    visual_substrs = ("Occipital", "Calcarine", "Cuneus", "Lingual", "Fusiform")
+    visual_mask = np.array(
+        [
+            any(
+                s in nn.cell_type or s in (str(nn.id) + "_" + (nn.hemisphere or ""))
+                for s in visual_substrs
+            )
+            for nn in neurons
+        ],
+        dtype=bool,
+    )
+    # Fall back: drive any region whose label (we don't carry labels in
+    # Neuron) — match by id mapping the AAL2 labels. We use the
+    # connectome's regions directly.
+    label_by_id = {r.id: r.label for r in conn._regions}  # type: ignore[attr-defined]
+    visual_mask = np.array(
+        [any(s in label_by_id[nn.id] for s in visual_substrs) for nn in neurons],
+        dtype=bool,
+    )
+    pattern = np.zeros(n, dtype=np.float64)
+    pattern[visual_mask] = 0.4
+    print(f"  drive {int(visual_mask.sum())} visual regions")
+
+    def stim(_t: float) -> np.ndarray:
+        return pattern
+
+    result = simulate(spec, duration=3.0, stimulus=stim, activation=tanh, dt=2e-3)
+    yield (
+        ScenarioSpec(
+            id="visual_drive",
+            label="Drive visual cortex → propagation",
+            description=(
+                "REAL human DTI connectome (94 AAL2 regions, HCP subject NAP_001 "
+                "via the neurolib dataset). Drive the visual-cortex regions; "
+                "activity propagates into the rest of the brain through real "
+                "white-matter streamline counts."
+            ),
+        ),
+        build_payload(
+            subgraph,
+            result,
+            skeleton_provider=conn,
+            spec=spec,
+            dataset_id="dti_hcp",
+            scenario_id="visual_drive",
+            scenario_label="Visual-cortex drive → propagation",
+            description=(
+                "REAL 94-region human DTI connectome (Automated Anatomical "
+                "Parcellation 2, Rolls et al. 2015) from one HCP subject's "
+                "diffusion MRI scan, packaged via the neurolib project. "
+                "Steady drive on the visual-cortex regions (Occipital/Calcarine/"
+                "Cuneus/Lingual/Fusiform); activity propagates outwards through "
+                "the real streamline-count matrix. Not synthetic this time."
+            ),
+            hyperparams={
+                "global_gain": 0.0008,
+                "symmetrize": True,
+                "weight_heuristic": "log1p",
+                "activation": "tanh",
+                "dt_sim": 2e-3,
+                "tau_default_ms": 100.0,
+                "n_regions": n,
+                "data_source": "neurolib gw/NAP_001 / AAL2 atlas",
+                "stimulus": {
+                    "type": "visual_cortex_drive",
+                    "amplitude": 0.4,
+                },
+            },
+            stim_fn=stim,
+            stride=1,
+            min_radius=0.0,
+            n_frames=80,
+            target_scale=20.0,
+        ),
+    )
+
+
 # ---------------- Top-level driver -------------------------------------------
 
 
@@ -803,6 +900,51 @@ def main() -> None:
         )
         print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
 
+    # ----- Real DTI (HCP NAP_001 via neurolib, AAL2 parcellation) -----
+    dti_real_path = repo / "tests" / "fixtures" / "dti_hcp" / "DTI_CM.mat"
+    dti_real_dataset = DatasetSpec(
+        id="dti_hcp",
+        label="Human DTI brain · HCP NAP_001 (real)",
+        summary=(
+            "94-region human DTI connectome from a real diffusion-MRI scan "
+            "(HCP subject NAP_001), parcelled with AAL2."
+        ),
+        biology=(
+            "Real diffusion-MRI tractography from one Human Connectome Project "
+            "subject. The 94 nodes are cortical and subcortical regions in the "
+            "Automated Anatomical Parcellation 2 (AAL2, Rolls et al. 2015 "
+            "NeuroImage); edge weights are streamline counts between parcels. "
+            "Data shipped via the neurolib project (NAP_001 subject under "
+            "neurolib's gw/ dataset). The same Galvani pipeline that runs the "
+            "single-cell hemibrain HD ring runs on this region-level matrix "
+            "with zero changes -- Subgraph -> Parameterizer -> Simulator is "
+            "agnostic to whether each 'neuron' is one cell or one cortical "
+            "parcel. Regions are rendered as small 6-spoked stars at their MNI "
+            "centroids."
+        ),
+        scenarios=[],
+    )
+    dti_real_outputs: list[ScenarioOutput] = []
+    if dti_real_path.exists():
+        print("\n[dti_hcp] real HCP/AAL2 data")
+        for scenario_spec, payload in dti_real_scenarios(dti_real_path):
+            path = out_dir / f"dti_hcp_{scenario_spec.id}.json"
+            write_payload(payload, path)
+            size_kb = path.stat().st_size / 1024
+            dti_real_outputs.append(
+                ScenarioOutput(
+                    dataset_id="dti_hcp",
+                    scenario_id=scenario_spec.id,
+                    label=scenario_spec.label,
+                    file=path.name,
+                    description=scenario_spec.description,
+                    size_kb=size_kb,
+                )
+            )
+            print(f"  {path.name}: {size_kb:.0f} KiB ({scenario_spec.label})")
+    else:
+        print(f"\n[dti_hcp] skipped: {dti_real_path} not found")
+
     # ----- Manifest -----
     manifest: dict[str, Any] = {
         "schema_version": 2,
@@ -852,6 +994,21 @@ def main() -> None:
                     for o in dti_outputs
                 ],
             },
+            {
+                "id": dti_real_dataset.id,
+                "label": dti_real_dataset.label,
+                "summary": dti_real_dataset.summary,
+                "biology": dti_real_dataset.biology,
+                "scenarios": [
+                    {
+                        "id": o.scenario_id,
+                        "label": o.label,
+                        "file": o.file,
+                        "description": o.description,
+                    }
+                    for o in dti_real_outputs
+                ],
+            },
         ],
     }
     manifest_path = out_dir / "manifest.json"
@@ -859,7 +1016,7 @@ def main() -> None:
         json.dump(manifest, f, indent=2)
     print(f"\nwrote manifest: {manifest_path.relative_to(repo)}")
 
-    total = sum(o.size_kb for o in hd_outputs + mb_outputs + dti_outputs)
+    total = sum(o.size_kb for o in hd_outputs + mb_outputs + dti_outputs + dti_real_outputs)
     print(f"total payload size: {total / 1024:.2f} MiB")
 
 
