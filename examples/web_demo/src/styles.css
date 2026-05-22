@@ -1205,6 +1205,10 @@ pre.model-eq {
 .detail-overlay-exit:hover {
   transform: rotate(90deg);
 }
+.detail-overlay-info svg {
+  width: 20px;
+  height: 20px;
+}
 @media (max-width: 720px) {
   .detail-overlay-controls.drawer-open {
     display: none;

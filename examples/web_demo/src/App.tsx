@@ -64,7 +64,12 @@ export default function App() {
   const [companions, setCompanions] = useState<CompanionNeuron[]>([]);
   const [companionsLoading, setCompanionsLoading] = useState(false);
   // Mobile: collapse the sidebar by default and let a hamburger toggle it.
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // We initialize from `matchMedia` so the panel starts off-canvas on phone
+  // viewports without flashing visible on the first paint.
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return !window.matchMedia("(max-width: 720px)").matches;
+  });
   // Single-open accordion: which infobox is currently expanded.
   const [openCard, setOpenCard] = useState<string | null>("overview");
   // Whether the SNV drawer is currently visible. Decoupled from
@@ -564,12 +569,24 @@ export default function App() {
           >
             {!drawerOpen && (
               <button
-                className="detail-overlay-btn"
+                className="detail-overlay-btn detail-overlay-info"
                 onClick={() => setDrawerOpen(true)}
                 aria-label="Open neuron detail panel"
                 title="Open neuron detail panel"
               >
-                ☰
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="16" x2="12" y2="11" />
+                  <line x1="12" y1="8" x2="12.01" y2="8" />
+                </svg>
               </button>
             )}
             <button
