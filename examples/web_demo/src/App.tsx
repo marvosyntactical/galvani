@@ -879,6 +879,9 @@ export default function App() {
             neurons as they react to an artificial stimulus. Each neuron brightens and
             dims as its firing rate changes over time, while its color indicates its cell type.
           </p>
+	<p>
+	Click on a neuron to enter a detailed view where you can visualise its morphology, its neighborhood, and compute detailed biophysics using intra-Neuron Hodgkin Huxley.
+	</p>
           <p>
             The initial simulation is of the logic of a fruit fly's
             head-direction system, but in the <strong>Menu</strong>{" "}
